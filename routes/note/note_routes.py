@@ -15,6 +15,9 @@ from src.auth_helpers import require_user
 from src.constants import DATA_DIR
 from src.upload_handler import reserve_upload_references
 from sqlalchemy.orm.attributes import flag_modified
+from routes.note.note_service import (
+    create_note_record, update_note_record, delete_note_record, toggle_item_record,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -660,26 +663,8 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
         )
         db = SessionLocal()
         try:
-            note = Note(
-                id=str(uuid.uuid4()),
-                owner=user,
-                title=body.title,
-                content=body.content,
-                items=json.dumps(body.items) if body.items is not None else None,
-                note_type=body.note_type,
-                color=body.color,
-                label=body.label,
-                pinned=body.pinned,
-                due_date=body.due_date,
-                source=body.source,
-                session_id=body.session_id,
-                image_url=body.image_url,
-                repeat=body.repeat or "none",
-                sort_order=body.sort_order if body.sort_order is not None else 0,
-            )
-            db.add(note)
-            db.commit()
-            db.refresh(note)
+            data = body.model_dump(exclude_unset=True)
+            note = create_note_record(db, user, data)
             return _note_to_dict(note)
         finally:
             db.close()
@@ -705,54 +690,17 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
     @router.put("/{note_id}")
     def update_note(request: Request, note_id: str, body: NoteUpdate):
         user = _owner(request)
+        _reserve_note_uploads(
+            user, body.image_url, body.color, body.content,
+            json.dumps(body.items) if body.items is not None else None,
+        )
         db = SessionLocal()
         try:
-            note = db.query(Note).filter(Note.id == note_id).first()
-            if not note:
-                raise HTTPException(404, "Note not found")
-            # SECURITY: strict ownership — previously `note.owner and note.owner != user`
-            # let any user touch a row whose owner field was null/empty.
-            if user is not None and note.owner != user:
-                raise HTTPException(404, "Note not found")
-
-            _reserve_note_uploads(
-                user,
-                body.image_url,
-                body.color,
-                body.content,
-                json.dumps(body.items) if body.items is not None else None,
-            )
-            if body.title is not None:
-                note.title = body.title
-            if body.content is not None:
-                note.content = body.content
-            if body.items is not None:
-                note.items = json.dumps(body.items)
-                flag_modified(note, "items")
-            if body.note_type is not None:
-                note.note_type = body.note_type
-            if body.color is not None:
-                note.color = body.color
-            if body.label is not None:
-                note.label = body.label
-            if body.pinned is not None:
-                note.pinned = body.pinned
-            if body.archived is not None:
-                note.archived = body.archived
-            if body.due_date is not None:
-                note.due_date = body.due_date
-            if body.image_url is not None:
-                note.image_url = body.image_url
-            if body.repeat is not None:
-                note.repeat = body.repeat
-            if body.sort_order is not None:
-                note.sort_order = body.sort_order
-            if body.agent_session_id is not None:
-                note.agent_session_id = body.agent_session_id
-
-            db.commit()
-            db.refresh(note)
+            data = body.model_dump(exclude_unset=True)
+            note = update_note_record(db, user, note_id, data)
             return _note_to_dict(note)
+        except LookupError:
+            raise HTTPException(404, "Note not found")
         finally:
             db.close()
 
@@ -762,16 +710,10 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
         user = _owner(request)
         db = SessionLocal()
         try:
-            note = db.query(Note).filter(Note.id == note_id).first()
-            if not note:
-                raise HTTPException(404, "Note not found")
-            # SECURITY: strict ownership — previously `note.owner and note.owner != user`
-            # let any user touch a row whose owner field was null/empty.
-            if user is not None and note.owner != user:
-                raise HTTPException(404, "Note not found")
-            db.delete(note)
-            db.commit()
+            delete_note_record(db, user, note_id)
             return {"ok": True}
+        except LookupError:
+            raise HTTPException(404, "Note not found")
         finally:
             db.close()
 
@@ -819,23 +761,12 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
         user = _owner(request)
         db = SessionLocal()
         try:
-            note = db.query(Note).filter(Note.id == note_id).first()
-            if not note:
-                raise HTTPException(404, "Note not found")
-            # SECURITY: strict ownership — previously `note.owner and note.owner != user`
-            # let any user touch a row whose owner field was null/empty.
-            if user is not None and note.owner != user:
-                raise HTTPException(404, "Note not found")
-            if not note.items:
-                raise HTTPException(400, "Note has no checklist items")
-            items = json.loads(note.items)
-            if index < 0 or index >= len(items):
-                raise HTTPException(400, f"Item index {index} out of range")
-            items[index]["done"] = not items[index].get("done", False)
-            note.items = json.dumps(items)
-            flag_modified(note, "items")
-            db.commit()
+            items = toggle_item_record(db, user, note_id, index)
             return {"ok": True, "items": items}
+        except LookupError:
+            raise HTTPException(404, "Note not found")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         finally:
             db.close()
 
