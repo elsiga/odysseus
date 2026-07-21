@@ -1,27 +1,23 @@
-"""Per-field local-first sync endpoints (browser cookie auth for Slice 1)."""
+"""Per-record local-first sync endpoints over odysseus's native tables."""
 import os
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 from core.database import SessionLocal, engine
 from src.auth_helpers import require_user
 from src.sync.models import create_sync_tables
+from src.sync.listeners import register_note_listeners
 from src.sync.apply import apply_push
 from src.sync.pull import pull_changes
 
-# Single-user fallback identity, used only when require_user returns "" (auth
-# disabled / unconfigured single-user first-run+loopback / LOCALHOST_BYPASS).
-# Mirrors routes/calendar_routes.py's FALLBACK_OWNER convention.
 FALLBACK_OWNER = os.environ.get("ODYSSEUS_FALLBACK_OWNER", "owner@localhost")
 
 
 def setup_sync_routes() -> APIRouter:
     create_sync_tables(engine)
+    register_note_listeners()
     router = APIRouter(prefix="/api/sync", tags=["sync"])
 
     def _owner(request: Request) -> str:
-        # require_user raises 401 itself when auth is configured and the
-        # caller is unauthenticated; it returns "" for single-user / auth
-        # disabled modes, in which case we fall back to FALLBACK_OWNER.
         user = require_user(request)
         return user if user else FALLBACK_OWNER
 
@@ -33,13 +29,12 @@ def setup_sync_routes() -> APIRouter:
     async def push(request: Request):
         owner = _owner(request)
         body = await request.json()
-        device_id = (body.get("deviceId") or "").strip()
-        patches = body.get("patches") or []
-        if not device_id or len(patches) > 200:
+        changes = body.get("changes") or []
+        if len(changes) > 500:
             raise HTTPException(400, "INVALID_BODY")
         db = SessionLocal()
         try:
-            return apply_push(db, owner, device_id, patches)
+            return apply_push(db, owner, changes)
         except PermissionError:
             db.rollback()
             return JSONResponse(status_code=403, content={"error": "FORBIDDEN"})

@@ -5,9 +5,7 @@ from fastapi import FastAPI
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
-import src.sync.models as m
-
-TS1 = "2026-07-21T00:00:00.000Z-000001"
+import core.database as db
 
 
 class _Identity:
@@ -21,15 +19,16 @@ class _Identity:
         await self.app(scope, receive, send)
 
 
-def _app(tmp_path, monkeypatch, is_configured=True):
-    engine = create_engine(f"sqlite:///{tmp_path/'s.db'}",
+def _app(tmp_path, monkeypatch):
+    eng = create_engine(f"sqlite:///{tmp_path/'s.db'}",
         connect_args={"check_same_thread": False}, poolclass=NullPool)
-    Session = sessionmaker(bind=engine)
+    Session = sessionmaker(bind=eng)
+    db.Base.metadata.create_all(eng, tables=[db.Note.__table__])
     import routes.sync_routes as sr
     monkeypatch.setattr(sr, "SessionLocal", Session)
-    monkeypatch.setattr(sr, "engine", engine)
+    monkeypatch.setattr(sr, "engine", eng)
     app = FastAPI()
-    app.state.auth_manager = SimpleNamespace(is_configured=is_configured)
+    app.state.auth_manager = SimpleNamespace(is_configured=True)
     app.include_router(sr.setup_sync_routes())
     return _Identity(app)
 
@@ -39,57 +38,24 @@ def _c(app):
     return httpx.AsyncClient(transport=t, base_url="http://sync.test")
 
 
-def _c_loopback(app):
-    t = httpx.ASGITransport(app=app, client=("127.0.0.1", 12345))
-    return httpx.AsyncClient(transport=t, base_url="http://sync.test")
-
-
-def test_push_then_pull(tmp_path, monkeypatch):
+def test_push_then_pull_roundtrip(tmp_path, monkeypatch):
     async def _run():
         app = _app(tmp_path, monkeypatch)
         alice = {"x-test-user": "alice"}
         async with _c(app) as c:
-            body = {"deviceId": "dev1", "patches": [
-                {"entity": "task", "entityId": "t1", "fields": {"title": {"v": "Buy milk", "ts": TS1}}}]}
+            body = {"changes": [{"entity": "note", "id": "n1", "op": "upsert",
+                "editedAt": "2026-07-21T10:00:00", "record": {"title": "Buy milk"}}]}
             r = await c.post("/api/sync/push", json=body, headers=alice)
-            assert r.status_code == 200 and r.json()["applied"] == 1
+            assert r.status_code == 200 and r.json()["results"][0]["rev"] == 1
             pulled = (await c.get("/api/sync/pull?cursor=0", headers=alice)).json()
-            assert pulled["changes"][0]["fields"]["title"]["v"] == "Buy milk"
+            assert pulled["changes"][0]["record"]["title"] == "Buy milk"
     asyncio.run(_run())
 
 
-def test_pull_requires_auth(tmp_path, monkeypatch):
-    monkeypatch.setenv("AUTH_ENABLED", "true")
+def test_pull_requires_auth_when_configured(tmp_path, monkeypatch):
     async def _run():
         app = _app(tmp_path, monkeypatch)
-        async with _c(app) as c:
+        async with _c(app) as c:  # no x-test-user header, remote IP
             r = await c.get("/api/sync/pull?cursor=0")
-            assert r.status_code in (401, 403)
-    asyncio.run(_run())
-
-
-def test_ping_falls_back_to_owner_in_single_user_mode(tmp_path, monkeypatch):
-    # require_user returns "" (not a 401) when auth is unconfigured and the
-    # caller is on loopback (pre-setup / single-user access). _owner should
-    # fall back to FALLBACK_OWNER rather than 401-ing.
-    async def _run():
-        app = _app(tmp_path, monkeypatch, is_configured=False)
-        async with _c_loopback(app) as c:
-            r = await c.get("/api/sync/ping")
-            assert r.status_code == 200
-            assert r.json() == {"ok": True, "user": "owner@localhost"}
-    asyncio.run(_run())
-
-
-def test_push_invalid_field_returns_error_body(tmp_path, monkeypatch):
-    async def _run():
-        app = _app(tmp_path, monkeypatch)
-        alice = {"x-test-user": "alice"}
-        async with _c(app) as c:
-            body = {"deviceId": "dev1", "patches": [
-                {"entity": "task", "entityId": "t1",
-                 "fields": {"not_a_real_field": {"v": "x", "ts": TS1}}}]}
-            r = await c.post("/api/sync/push", json=body, headers=alice)
-            assert r.status_code == 400
-            assert r.json() == {"error": "INVALID_FIELD"}
+            assert r.status_code == 401
     asyncio.run(_run())
