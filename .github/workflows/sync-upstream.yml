@@ -10,8 +10,8 @@ on:
     - cron: '0 6 * * 1'   # Mondays 06:00 UTC
   workflow_dispatch: {}
 
-permissions:
-  contents: write
+# Default-deny at the workflow level; the one job opts into only what it needs.
+permissions: {}
 
 # Never run two syncs at once.
 concurrency:
@@ -21,9 +21,13 @@ concurrency:
 jobs:
   merge-upstream:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # push the merged result back to `integration`
     steps:
+      # persist-credentials stays true: this job needs the checkout token to
+      # push the merge back. zizmor's artipacked warning is accepted here.
       - name: Checkout integration
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0  # zizmor: ignore[artipacked]
         with:
           ref: integration
           fetch-depth: 0   # full history so the merge has a real base
