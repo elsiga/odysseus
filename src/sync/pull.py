@@ -1,6 +1,6 @@
-import json
-from src.sync.registry import REGISTRY, synced_fields
-from src.sync.winners import winners_from_rows
+"""Per-record pull: page over sync_change_log, resolving each change to the current
+live record (or a delete tombstone). Bootstrap (cursor<=0) ships all live rows."""
+from src.sync.registry import REGISTRY
 from src.sync.models import SyncChangeLog
 
 
@@ -14,27 +14,26 @@ def pull_changes(db, owner: str, cursor: int, limit: int) -> dict:
     if cursor <= 0:
         changes = []
         for entity, spec in REGISTRY.items():
-            model = spec["model"]
-            for row in db.query(model).filter(model.owner == owner).all():
-                prior = (db.query(SyncChangeLog)
-                           .filter(SyncChangeLog.owner == owner,
-                                   SyncChangeLog.entity == entity,
-                                   SyncChangeLog.entityId == row.id).all())
-                winners = winners_from_rows(prior)
-                fallback_ts = (row.updatedAt.isoformat() + "Z-000000") if row.updatedAt else "1970-01-01T00:00:00.000Z-000000"
-                fields = {}
-                for f in synced_fields(entity):
-                    v = getattr(row, f)
-                    ts = winners[f][0] if f in winners else fallback_ts
-                    fields[f] = {"v": v, "ts": ts}
-                changes.append({"seq": 0, "entity": entity, "entityId": row.id, "fields": fields})
+            for row in db.query(spec["model"]).filter(spec["model"].owner == owner).all():
+                changes.append({"entity": entity, "id": row.id, "op": "upsert",
+                                "rev": row.rev, "record": spec["to_wire"](row)})
         return {"changes": changes, "cursor": _max_seq(db, owner), "hasMore": False}
 
     rows = (db.query(SyncChangeLog)
               .filter(SyncChangeLog.owner == owner, SyncChangeLog.seq > cursor)
               .order_by(SyncChangeLog.seq.asc()).limit(limit).all())
-    changes = [{"seq": r.seq, "entity": r.entity, "entityId": r.entityId,
-                "fields": json.loads(r.fields)} for r in rows]
+    changes = []
+    for r in rows:
+        spec = REGISTRY.get(r.entity)
+        if spec is None:
+            continue
+        live = db.get(spec["model"], r.entity_id)
+        if r.op == "delete" or live is None:
+            changes.append({"entity": r.entity, "id": r.entity_id, "op": "delete",
+                            "rev": r.rev, "record": None})
+        else:
+            changes.append({"entity": r.entity, "id": r.entity_id, "op": "upsert",
+                            "rev": live.rev, "record": spec["to_wire"](live)})
     out_cursor = rows[-1].seq if rows else cursor
     has_more = len(rows) == limit and out_cursor < _max_seq(db, owner)
     return {"changes": changes, "cursor": out_cursor, "hasMore": has_more}
