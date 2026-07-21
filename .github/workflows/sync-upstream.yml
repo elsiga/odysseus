@@ -1,0 +1,45 @@
+name: Sync upstream (weekly)
+
+# Keeps the `integration` branch up to date with odysseus-dev/odysseus:dev.
+# - Clean merge  -> pushed automatically.
+# - Conflicting merge -> this job FAILS and GitHub emails you; resolve locally.
+# You can also trigger it on demand from the Actions tab (workflow_dispatch).
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+# Never run two syncs at once.
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  merge-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout integration
+        uses: actions/checkout@v4
+        with:
+          ref: integration
+          fetch-depth: 0   # full history so the merge has a real base
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and fetch dev
+        run: |
+          git remote add upstream https://github.com/odysseus-dev/odysseus.git
+          git fetch upstream dev
+
+      - name: Merge upstream/dev
+        run: git merge --no-edit upstream/dev
+
+      - name: Push merged result
+        run: git push origin integration
