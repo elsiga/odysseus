@@ -59,6 +59,7 @@ def test_push_then_pull(tmp_path, monkeypatch):
 
 
 def test_pull_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTH_ENABLED", "true")
     async def _run():
         app = _app(tmp_path, monkeypatch)
         async with _c(app) as c:
