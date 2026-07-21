@@ -1149,6 +1149,28 @@ def _migrate_add_notes_sort_order():
         except Exception:
             pass
 
+def _migrate_add_notes_rev():
+    """Add the monotonic `rev` column to notes if it doesn't exist (per-record LWW)."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(notes)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns and "rev" not in columns:
+            conn.execute("ALTER TABLE notes ADD COLUMN rev INTEGER NOT NULL DEFAULT 1")
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"notes rev migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 def _migrate_add_mode_column():
     """Add mode column to sessions table if it doesn't exist."""
     import sqlite3
@@ -1729,6 +1751,7 @@ class Note(TimestampMixin, Base):
     # Chat session spawned by the note's "Agent" button (solve-this-todo).
     # The note shows a clickable tag that opens this session for review.
     agent_session_id  = Column(String, nullable=True)
+    rev = Column(Integer, nullable=False, default=1, server_default="1")
 
 
 class CalendarCal(TimestampMixin, Base):
@@ -1930,6 +1953,7 @@ def init_db():
     _migrate_add_cached_models_column()
     _migrate_add_pinned_models_column()
     _migrate_add_notes_sort_order()
+    _migrate_add_notes_rev()
     _migrate_add_model_type_column()
     _migrate_add_model_endpoint_refresh_columns()
     _migrate_add_model_endpoint_owner_column()
