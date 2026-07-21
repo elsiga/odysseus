@@ -59,4 +59,27 @@ describe('engine', () => {
     await c2.syncOnce()
     expect((await db.notes.get('remote1'))?.title).toBe('from-other-device')
   })
+
+  it('skips a stale lower-rev echo when local is ahead (rev guard)', async () => {
+    const client = createSyncClient({ fetchFn: fakeServer() as any })
+    await syncedUpsert({ id: 'n1', title: 'v1' })
+    await client.syncOnce()                                  // server rev1; local _baseRev=1,_dirty=0
+    // Local has advanced past the server's rev (an edit not yet reflected server-side)
+    await db.notes.update('n1', { title: 'newer-local', _baseRev: 5, _dirty: 0 })
+    await db.meta.put({ key: 'cursor', value: 0 })           // force next pull to re-deliver rev1
+    await client.syncOnce()                                  // pull returns n1 rev1 → rev guard must skip
+    expect((await db.notes.get('n1'))?.title).toBe('newer-local')
+  })
+
+  it('skips an echo while a local edit is pending (dirty guard)', async () => {
+    const client = createSyncClient({ fetchFn: fakeServer() as any })
+    await syncedUpsert({ id: 'n2', title: 'v1' })
+    await client.syncOnce()                                  // server rev1; local _baseRev=1
+    // A pending local edit with a LOWER baseRev so the rev guard would NOT catch it —
+    // only the dirty guard can. No outbox entry (direct update), so pushOnce is a no-op.
+    await db.notes.update('n2', { title: 'dirty-local', _dirty: 1, _baseRev: 0 })
+    await db.meta.put({ key: 'cursor', value: 0 })
+    await client.syncOnce()                                  // pull returns n2 rev1 (>baseRev 0) but local _dirty → skip
+    expect((await db.notes.get('n2'))?.title).toBe('dirty-local')
+  })
 })
