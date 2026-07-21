@@ -2,10 +2,12 @@ import json
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
+import pytest
 import src.sync.models as m
 from src.sync.registry import synced_fields, validate_field_value
 from src.sync.winners import winners_from_rows
 from src.sync.models import SyncChangeLog
+from src.sync.apply import apply_push
 
 
 def _db(tmp_path):
@@ -39,3 +41,43 @@ def test_winners_pick_highest_hlc():
     ]
     w = winners_from_rows(rows)
     assert w["title"] == ("2026-01-01T00:00:00.000Z-000002", "d2")
+
+
+def _patch(entity_id, **fields_ts):
+    return {"entity": "task", "entityId": entity_id,
+            "fields": {f: {"v": v, "ts": ts} for f, (v, ts) in fields_ts.items()}}
+
+
+TS1 = "2026-07-21T00:00:00.000Z-000001"
+TS2 = "2026-07-21T00:00:00.000Z-000002"
+
+
+def test_apply_creates_then_field_lww(tmp_path):
+    _, Session = _db(tmp_path)
+    db = Session()
+    r = apply_push(db, "alice", "dev1", [_patch("t1", title=("A", TS1), bucket=("today", TS1))])
+    assert r["applied"] == 1
+    row = db.query(m.SyncTask).get("t1")
+    assert row.title == "A" and row.owner == "alice"
+
+    # older ts loses, newer ts wins — per field
+    apply_push(db, "alice", "dev1", [_patch("t1", title=("STALE", TS1))])   # equal/old -> skipped
+    assert db.query(m.SyncTask).get("t1").title == "A"
+    apply_push(db, "alice", "dev1", [_patch("t1", title=("B", TS2))])       # newer -> wins
+    assert db.query(m.SyncTask).get("t1").title == "B"
+
+
+def test_apply_rejects_unknown_field(tmp_path):
+    _, Session = _db(tmp_path)
+    db = Session()
+    with pytest.raises(ValueError):
+        apply_push(db, "alice", "dev1",
+                   [{"entity": "task", "entityId": "t1", "fields": {"nope": {"v": 1, "ts": TS1}}}])
+
+
+def test_apply_owner_gate(tmp_path):
+    _, Session = _db(tmp_path)
+    db = Session()
+    apply_push(db, "alice", "dev1", [_patch("t1", title=("mine", TS1))])
+    with pytest.raises(PermissionError):
+        apply_push(db, "bob", "dev1", [_patch("t1", title=("steal", TS2))])
