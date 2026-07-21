@@ -79,7 +79,6 @@ import bcrypt as _bcrypt
 from src.app_helpers import abs_join, serve_html_with_nonce
 from src.generated_images import GENERATED_IMAGE_HEADERS, resolve_generated_image_path
 from starlette.responses import RedirectResponse
-from starlette.exceptions import HTTPException as _StarletteHTTPException
 
 # ========= LOGGING =========
 import logging.handlers
@@ -516,24 +515,6 @@ app.mount("/static", _RevalidatingStatic(directory=STATIC_DIR), name="static")
 # to, without widening it to "/" and intercepting odysseus's other routes
 # (/, /tasks, /notes, ...).
 #
-# _SpaStatic falls back to index.html on a 404 so client-side routes under
-# /app/* (e.g. /app/some-client-route) still resolve to the SPA shell,
-# rather than 404ing, mirroring the old serve_webapp_spa_fallback behavior.
-class _SpaStatic(StaticFiles):
-    async def get_response(self, path, scope):
-        try:
-            return await super().get_response(path, scope)
-        except _StarletteHTTPException as exc:
-            # StaticFiles.get_response raises starlette's base HTTPException
-            # (not fastapi's subclass) on a 404 — catch the base class here.
-            if exc.status_code != 404:
-                raise
-            return await super().get_response("index.html", scope)
-
-
-WEBAPP_DIST = os.path.join(BASE_DIR, "webapp", "dist")
-if os.path.isdir(WEBAPP_DIST):
-    app.mount("/app", _SpaStatic(directory=WEBAPP_DIST, html=True), name="app")
 
 # ========= GENERATED IMAGES =========
 @app.get("/api/generated-image/{filename}")
