@@ -1,62 +1,53 @@
-import json
-from src.sync.registry import REGISTRY, synced_fields, validate_field_value
-from src.sync.winners import winners_from_rows
-from src.sync.hlc import compare_hlc
+"""Per-record last-write-wins push over odysseus's native tables, routed through
+the domain CRUD service (one source of truth). Tie-break by client `editedAt`."""
+from datetime import datetime
+from src.sync.registry import REGISTRY
 from src.sync.models import SyncChangeLog
 
 
-def apply_push(db, owner: str, device_id: str, patches: list) -> dict:
-    applied = 0
-    try:
-        for patch in patches:
-            entity = patch["entity"]
-            if entity not in REGISTRY:
-                raise ValueError("INVALID_FIELD")
-            model = REGISTRY[entity]["model"]
-            entity_id = patch["entityId"]
-            incoming = patch["fields"]
+def _parse_ts(value):
+    if value is None or isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value).replace("Z", "").replace("+00:00", ""))
 
-            for field, fp in incoming.items():
-                if field not in synced_fields(entity):
-                    raise ValueError("INVALID_FIELD")
-                if not validate_field_value(entity, field, fp["v"]):
-                    raise ValueError("INVALID_VALUE")
 
-            row = db.get(model, entity_id)
-            if row is not None and row.owner != owner:
-                raise PermissionError("FORBIDDEN")
+def apply_push(db, owner: str, changes: list) -> dict:
+    results = []
+    for ch in changes:
+        entity = ch.get("entity")
+        spec = REGISTRY.get(entity)
+        if spec is None:
+            raise ValueError("INVALID_ENTITY")
+        model = spec["model"]
+        eid = ch["id"]
+        op = ch.get("op", "upsert")
+        edited_at = _parse_ts(ch.get("editedAt"))
 
-            prior = (db.query(SyncChangeLog)
-                       .filter(SyncChangeLog.owner == owner,
-                               SyncChangeLog.entity == entity,
-                               SyncChangeLog.entityId == entity_id).all())
-            current = winners_from_rows(prior)
+        row = db.get(model, eid)
+        if row is not None and owner is not None and row.owner != owner:
+            raise PermissionError("FORBIDDEN")
 
-            winning = {}
-            for field, fp in incoming.items():
-                cur = current.get(field)
-                if cur is None or compare_hlc(cur[0], cur[1], fp["ts"], device_id) < 0:
-                    winning[field] = fp
+        if op == "delete":
+            if row is not None:
+                spec["delete"](db, owner, eid)
+            results.append({"entity": entity, "id": eid, "op": "delete", "rev": None, "record": None})
+            continue
 
-            if not winning:
-                continue
+        data = spec["from_wire"](ch.get("record") or {})
+        data["edited_at"] = edited_at
+        if row is None:
+            data["id"] = eid
+            new = spec["create"](db, owner, data)
+            results.append({"entity": entity, "id": eid, "op": "upsert",
+                            "rev": new.rev, "record": spec["to_wire"](new)})
+        elif edited_at is None or row.updated_at is None or edited_at >= row.updated_at:
+            updated = spec["update"](db, owner, eid, data)
+            results.append({"entity": entity, "id": eid, "op": "upsert",
+                            "rev": updated.rev, "record": spec["to_wire"](updated)})
+        else:  # server row is newer — it wins
+            results.append({"entity": entity, "id": eid, "op": "upsert",
+                            "rev": row.rev, "record": spec["to_wire"](row)})
 
-            if row is None:
-                row = model(id=entity_id, owner=owner)
-                db.add(row)
-            for field, fp in winning.items():
-                setattr(row, field, fp["v"])
-
-            db.add(SyncChangeLog(owner=owner, entity=entity, entityId=entity_id,
-                                 deviceId=device_id, fields=json.dumps(winning)))
-            applied += 1
-
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-
-    max_seq = (db.query(SyncChangeLog.seq)
-                 .filter(SyncChangeLog.owner == owner)
+    max_seq = (db.query(SyncChangeLog.seq).filter(SyncChangeLog.owner == owner)
                  .order_by(SyncChangeLog.seq.desc()).first())
-    return {"applied": applied, "serverSeq": max_seq[0] if max_seq else 0}
+    return {"results": results, "cursor": max_seq[0] if max_seq else 0}
