@@ -12,12 +12,16 @@ export default defineConfig({
       includeAssets: [],
       manifest: {
         name: "Odysseus Tasks",
-        short_name: "Odysseus",
-        start_url: "/app-assets/",
+        short_name: "Tasks",
+        start_url: "/app",
         display: "standalone",
         background_color: "#ffffff",
         theme_color: "#ffffff",
         icons: [],
+      },
+      workbox: {
+        navigateFallback: "/app-assets/index.html",
+        globPatterns: ["**/*.{js,css,html}"],
       },
     }),
   ],
