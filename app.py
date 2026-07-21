@@ -495,6 +495,17 @@ class _RevalidatingStatic(StaticFiles):
 
 app.mount("/static", _RevalidatingStatic(directory=STATIC_DIR), name="static")
 
+# ========= LOCAL-FIRST SPA (webapp/dist) =========
+# Isolated prefix, guarded so a missing/unbuilt dist dir never breaks import.
+# `webapp/dist` is built via `cd webapp && npm run build` (gitignored output).
+# Vite's `base: "/app-assets/"` means index.html references JS/CSS chunks at
+# /app-assets/assets/<file> *and* root-level PWA files (manifest.webmanifest,
+# registerSW.js, sw.js) at /app-assets/<file> — so the whole dist dir (not
+# just dist/assets) must be mounted at /app-assets for those URLs to resolve.
+WEBAPP_DIST = os.path.join(BASE_DIR, "webapp", "dist")
+if os.path.isdir(WEBAPP_DIST):
+    app.mount("/app-assets", StaticFiles(directory=WEBAPP_DIST), name="app-assets")
+
 # ========= GENERATED IMAGES =========
 @app.get("/api/generated-image/{filename}")
 async def serve_generated_image(filename: str, request: Request):
@@ -915,6 +926,20 @@ async def serve_tasks(request: Request):
 @app.get("/library")
 async def serve_library(request: Request):
     return await serve_index(request)
+
+# Local-first SPA shell (webapp/dist) — isolated prefix, no auth/nonce
+# wrapping (it's a static built bundle, not a bundled-template route). 404s
+# cleanly if the SPA hasn't been built, instead of erroring at import time.
+@app.get("/app")
+async def serve_webapp_spa(request: Request):
+    index_path = os.path.join(WEBAPP_DIST, "index.html")
+    if not os.path.isfile(index_path):
+        raise HTTPException(status_code=404, detail="SPA not built")
+    return FileResponse(index_path)
+
+@app.get("/app/{path:path}")
+async def serve_webapp_spa_fallback(request: Request, path: str):
+    return await serve_webapp_spa(request)
 
 @app.get("/backgrounds")
 async def serve_backgrounds(request: Request):
