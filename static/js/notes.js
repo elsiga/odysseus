@@ -461,6 +461,15 @@ async function _patchNote(id, patch) {
   return await res.json();
 }
 
+async function _reorderNotesApi(ids) {
+  const res = await fetch(`${API_BASE}/api/notes/reorder`, {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) throw new Error('Failed to reorder notes');
+}
+
 // ---- Helpers ----
 
 function _esc(s) { return uiModule.esc ? uiModule.esc(s || '') : (s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -2689,7 +2698,7 @@ function _bindCardEvents(body) {
         body.classList.remove('drag-active');
         body.querySelectorAll('.drop-before, .drop-after').forEach(el => el.classList.remove('drop-before', 'drop-after'));
         const ids = [...body.querySelectorAll('.note-card')].map(c => c.dataset.noteId);
-        try { await fetch(`${API_BASE}/api/notes/reorder`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) }); }
+        try { await _reorderNotesApi(ids); }
         catch {}
       });
     });
@@ -2783,7 +2792,7 @@ function _bindCardEvents(body) {
         document.documentElement.style.touchAction = '';
         if (committed) {
           const ids = [...body.querySelectorAll('.note-card')].map(c => c.dataset.noteId);
-          fetch(`${API_BASE}/api/notes/reorder`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) }).catch(() => {});
+          _reorderNotesApi(ids).catch(() => {});
         }
       }
       dragCard = null;
@@ -5287,12 +5296,7 @@ async function _commitNoteReorder() {
   const ids = Array.from(grid.querySelectorAll('.note-card')).map(c => c.dataset.noteId).filter(Boolean);
   if (!ids.length) return;
   try {
-    await fetch(`${API_BASE}/api/notes/reorder`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    });
+    await _reorderNotesApi(ids);
     // Update local sort_order so subsequent renders agree with the server.
     ids.forEach((nid, i) => {
       const n = _notes.find(nn => nn.id === nid);
