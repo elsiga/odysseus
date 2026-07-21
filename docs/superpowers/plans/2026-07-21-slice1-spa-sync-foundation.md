@@ -1,448 +1,585 @@
-# Slice 1 — Local-First SPA + Sync Foundation (Tasks/Notes) Implementation Plan
+# Slice 1 — Local-First SPA + Per-Field Sync Foundation (Tasks) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship the thinnest end-to-end vertical of the offline-first productivity layer: a new React/Vite SPA, served by odysseus at `/app`, that lists/creates/edits/deletes the user's notes offline (IndexedDB) and syncs them to odysseus's existing `notes` table when online.
+**Goal:** Ship the thinnest end-to-end vertical of the offline-first productivity layer: a new React/Vite SPA, served by odysseus at `/app`, that lists/creates/edits/deletes **tasks** offline (IndexedDB) and syncs them to odysseus with **per-field last-write-wins** (ember-faithful), proving the full local-first ↔ odysseus loop.
 
-**Architecture:** A local-first SPA owns a Dexie (IndexedDB) store + outbox, adapted from ember's sync substrate. Two new odysseus endpoints (`GET /api/sync/pull`, `POST /api/sync/push`) reconcile that store with the existing `notes` table using **per-record last-write-wins keyed on `Note.updated_at`** — client edits are authoritative on push; pull brings down anything changed since the client's cursor and applies it to non-dirty local rows. Browser is same-origin, so auth is the normal cookie/TOTP session via `require_user`. The SPA is served from an isolated `/app` prefix so it cannot shadow or be shadowed by odysseus's existing routes.
+**Architecture:** Ember's local-first sync engine is lifted near-verbatim onto the client (Dexie store + outbox + per-field HLC stamps). odysseus's Python backend gains a faithful reimplementation of ember's sync server: two new **sync-owned tables** (`sync_task` live rows + an append-only `sync_change_log`) and two endpoints (`POST /api/sync/push`, `GET /api/sync/pull`) that resolve conflicts **per field** via hybrid-logical-clock comparison. New tasks are a store separate from odysseus's legacy `Note`; agent access is a later, additive slice. Browser is same-origin → cookie/TOTP auth via `require_user`.
 
-**Tech Stack:** Backend — Python 3, FastAPI, SQLAlchemy, pytest (httpx `AsyncClient` + `ASGITransport`). Frontend — TypeScript, React 18, Vite, Dexie 4, Vitest + `fake-indexeddb`, `vite-plugin-pwa`.
+**Tech Stack:** Backend — Python 3, FastAPI, SQLAlchemy, pytest (httpx `AsyncClient` + `ASGITransport`). Frontend — TypeScript, React 18, Vite, Dexie 4, zod, Vitest + `fake-indexeddb`, `vite-plugin-pwa`.
+
+**Reference implementation (read-only, port from here):** ember at `/home/elsiga/labspace/ember`. Shared core `packages/shared/src/{hlc,sync,entities}.ts` + `domain/*`; client `apps/web/src/sync/*`, `apps/web/src/db/*`; server semantics to mirror `apps/server/src/sync/{apply,pull,winners,registry}.ts`.
 
 ## Global Constraints
 
-- **Single backend only: odysseus.** No second server, no ember-server. (verbatim from spec §1)
-- **Minimize edits to odysseus hot files; put logic in new files.** Only one-line hooks allowed in `app.py` and `core/database.py`. (spec §5)
-- **Additive DB migrations only**, via the existing `_migrate_add_*` pattern in `core/database.py`. No Alembic. (spec §7)
-- **Sync writes must go through the ORM** so `Note.updated_at`'s `onupdate=utcnow_naive` fires (bulk/raw `UPDATE` bypasses it). (backend recon)
-- **Timestamps are naive UTC**, serialized with `.isoformat()` and **no `Z` suffix**, matching odysseus's `_note_to_dict`. (backend recon)
-- **New SPA lives in its own subtree `webapp/`**; `webapp/node_modules` and `webapp/dist` are gitignored. (spec §5)
-- **Per-record LWW, client-authoritative on push, dirty-aware on pull.** No HLC / change_log in this slice. (design decision, this plan)
+- **Single backend only: odysseus.** No ember-server. (spec §1)
+- **Per-field LWW via HLC + append-only change_log**, mirroring ember's wire format and semantics exactly. (design decision)
+- **Sync-owned tables only** (`sync_task`, `sync_change_log`); do **not** touch odysseus's `notes`/`Note` or its write paths. (design decision — keeps upstream merges clean)
+- **All logic in NEW files.** Only one-line hooks allowed in `app.py` (router include + `/app` serving). No edits to `core/database.py` or any actively-developed upstream file. (spec §5)
+- **New tables created via the sync package**, not via `init_db()` edits: register models on `Base.metadata` (imported through `routes/sync_routes.py`) and `create_all(tables=[...])` at router setup. (this plan)
+- **Wire field names are ember's camelCase** (`projectId`, `scheduledAt`, `sortOrder`, `completedAt`, `createdAt`, `deletedAt`) so the ported client speaks them unchanged; `sync_task` columns are named identically. (this plan)
+- **HLC compare:** lexicographic on `ts`, tiebreak `deviceId`, **strict `<`** (own echoes at equal ts are no-ops). Field values are **JSON scalars only**. (ember invariant)
+- **`updatedAt` is server-owned**, never accepted in a patch, never LWW'd; server stamps apply-time. (ember invariant)
+- New SPA lives in `webapp/`; `webapp/node_modules` and `webapp/dist` are gitignored.
 
 ---
 
 ## File Structure
 
-**Backend (new files):**
-- `src/sync/__init__.py` — package marker.
-- `src/sync/note_sync.py` — pure sync logic: `note_to_sync_dict(note)`, `apply_push_row(db, owner, row)`, `pull_notes(db, owner, cursor, limit)`, cursor encode/decode. No FastAPI imports — unit-testable in isolation.
-- `routes/sync_routes.py` — `setup_sync_routes()` factory returning an `APIRouter(prefix="/api/sync")` with `GET /pull`, `POST /push`, `GET /ping`.
+**Backend (all new files):**
+- `src/sync/__init__.py`
+- `src/sync/models.py` — `SyncTask` (live), `SyncChangeLog` (append-only) on `Base`.
+- `src/sync/hlc.py` — `compare_hlc(a_ts, a_dev, b_ts, b_dev) -> int`.
+- `src/sync/winners.py` — `winners_from_rows(rows) -> dict[field -> (ts, deviceId)]`.
+- `src/sync/registry.py` — `REGISTRY[kind] = {model, fields}`; `synced_fields(kind)`, `validate_field_value(kind, field, value)`.
+- `src/sync/apply.py` — `apply_push(db, owner, device_id, patches) -> dict`.
+- `src/sync/pull.py` — `pull_changes(db, owner, cursor, limit) -> dict`.
+- `routes/sync_routes.py` — `setup_sync_routes()` → `APIRouter(prefix="/api/sync")` with `POST /push`, `GET /pull`, `GET /ping`; creates the sync tables on setup.
 
-**Backend (one-line hooks in hot files):**
-- `core/database.py` — add `deleted_at` column to `Note` + a `_migrate_add_note_deleted_at()` call.
-- `app.py` — `include_router(setup_sync_routes())`; mount `/app-assets`; add `/app` + `/app/{path:path}` routes.
+**Backend (one-line hooks only):**
+- `app.py` — `include_router(setup_sync_routes())`; `/app-assets` mount + `/app` routes.
 
 **Backend tests (new):**
-- `tests/test_sync_notes_pull_push.py` — pull filtering, cursor paging, push upsert/LWW, owner isolation.
+- `tests/test_sync_hlc.py`, `tests/test_sync_apply_pull.py`, `tests/test_sync_routes.py`
 
-**Frontend (new subtree `webapp/`):**
-- `webapp/package.json`, `webapp/vite.config.ts`, `webapp/tsconfig.json`, `webapp/index.html`, `webapp/src/main.tsx`, `webapp/src/App.tsx`.
-- `webapp/src/db/db.ts` — Dexie schema (`notes`, `outbox`, `syncMeta`) + row types.
-- `webapp/src/db/repo.ts` — `syncedPut`, `createNote`, `updateNote`, `deleteNote`, `liveNotes`.
-- `webapp/src/sync/engine.ts` — `createSyncClient({apiBase, fetchFn})`: `pullOnce`, `pushOnce`, `syncOnce`, `start`, `stop`, cursor persistence, status.
-- `webapp/src/sync/status.ts` — status store + `useSyncStatus` hook.
-- `webapp/src/ui/TasksScreen.tsx` — minimal list/add/edit/delete UI + sync indicator.
-- `webapp/src/db/db.test.ts`, `webapp/src/sync/engine.test.ts` — Vitest.
-- `webapp/vitest.config.ts`, `webapp/src/test-setup.ts` (`fake-indexeddb/auto`).
+**Frontend (new subtree `webapp/`):** scaffold; `src/shared/` (ported ember shared core); `src/sync/` (ported ember client engine, task-only); `src/db/` (Dexie + task repo); `src/ui/TasksScreen.tsx`; Vitest specs.
 
-**Design reference (read-only):** `design/Tasks + Calendar Prototype.dc.html` — adapt visual language in Task 12; Slice 1 keeps the UI minimal, full day/week/calendar views are Slice 2.
+**Design reference (read-only):** `design/Tasks + Calendar Prototype.dc.html` — Task 14.
 
 ---
 
-### Task 1: Add `deleted_at` tombstone column to `Note` (additive migration)
-
-Sync needs a soft-delete tombstone so deletes propagate; `archived` already has UI meaning, so add a dedicated column.
+### Task 1: Sync-owned tables (`sync_task`, `sync_change_log`)
 
 **Files:**
-- Modify: `core/database.py` (Note model + a `_migrate_add_*` function + its call site)
-- Test: `tests/test_sync_notes_pull_push.py` (created here, expanded later)
-
-**Interfaces:**
-- Produces: `Note.deleted_at` (`DateTime`, nullable). A non-null value means the note is deleted.
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-# tests/test_sync_notes_pull_push.py
-from sqlalchemy import create_engine, inspect
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
-import core.database as cdb
-
-
-def _temp_db(tmp_path):
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'sync.db'}",
-        connect_args={"check_same_thread": False}, poolclass=NullPool,
-    )
-    cdb.Base.metadata.create_all(engine)
-    return engine, sessionmaker(bind=engine)
-
-
-def test_note_has_deleted_at_column(tmp_path):
-    engine, _ = _temp_db(tmp_path)
-    cols = {c["name"] for c in inspect(engine).get_columns("notes")}
-    assert "deleted_at" in cols
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `python -m pytest tests/test_sync_notes_pull_push.py::test_note_has_deleted_at_column -v`
-Expected: FAIL — `assert 'deleted_at' in cols` is False.
-
-- [ ] **Step 3: Add the column and migration**
-
-In `core/database.py`, inside `class Note(TimestampMixin, Base):` add after the `agent_session_id` column:
-
-```python
-    deleted_at = Column(DateTime, nullable=True)  # soft-delete tombstone for sync
-```
-
-Then add a migration function alongside the other `_migrate_add_*` helpers:
-
-```python
-def _migrate_add_note_deleted_at(engine):
-    """Add notes.deleted_at if missing (additive, backward-compatible)."""
-    insp = inspect(engine)
-    if "notes" not in insp.get_table_names():
-        return
-    cols = {c["name"] for c in insp.get_columns("notes")}
-    if "deleted_at" not in cols:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE notes ADD COLUMN deleted_at DATETIME"))
-```
-
-Find where the other `_migrate_add_*` functions are invoked inside `init_db()` and add one line next to them:
-
-```python
-    _migrate_add_note_deleted_at(engine)
-```
-
-(If `inspect`/`text` aren't already imported at that scope, they are imported at the top of `core/database.py`; reuse the existing imports.)
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `python -m pytest tests/test_sync_notes_pull_push.py::test_note_has_deleted_at_column -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add core/database.py tests/test_sync_notes_pull_push.py
-git commit -m "feat(sync): add notes.deleted_at tombstone column"
-```
-
----
-
-### Task 2: Pure sync serialization + cursor helpers
-
-**Files:**
-- Create: `src/sync/__init__.py`, `src/sync/note_sync.py`
-- Test: `tests/test_sync_notes_pull_push.py`
+- Create: `src/sync/__init__.py`, `src/sync/models.py`
+- Test: `tests/test_sync_apply_pull.py`
 
 **Interfaces:**
 - Produces:
-  - `note_to_sync_dict(note) -> dict` — keys: `id, title, content, items, note_type, color, label, pinned, archived, due_date, sort_order, repeat, deleted, updated_at` (`deleted` is `bool(note.deleted_at)`; `updated_at` is `.isoformat()` no `Z`).
-  - `encode_cursor(updated_at: datetime, note_id: str) -> str` → `"<iso>|<id>"`.
-  - `decode_cursor(cursor: str | None) -> tuple[datetime | None, str]` → `(dt, id)`; `None`/`""` → `(None, "")`.
+  - `SyncTask` — columns (camelCase to match wire): `id` (PK str), `owner` (str, index), `projectId`, `title`, `notes`, `bucket`, `scheduledAt`, `scheduledDurationMin`, `sortOrder` (Float), `completedAt`, `createdAt`, `deletedAt`, plus server-owned `updatedAt` (DateTime, `onupdate`).
+  - `SyncChangeLog` — `seq` (Integer PK autoincrement), `owner` (str, index), `entity` (str), `entityId` (str, index), `fields` (Text = JSON of `{field: {v, ts}}`), `deviceId` (str), `createdAt` (DateTime).
+  - `create_sync_tables(engine)` — `Base.metadata.create_all(engine, tables=[SyncTask.__table__, SyncChangeLog.__table__])`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# append to tests/test_sync_notes_pull_push.py
-from datetime import datetime
-from src.sync.note_sync import note_to_sync_dict, encode_cursor, decode_cursor
+# tests/test_sync_apply_pull.py
+from sqlalchemy import create_engine, inspect
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
+import src.sync.models as m
 
 
-def test_encode_decode_cursor_roundtrip():
-    dt = datetime(2026, 7, 21, 10, 30, 0)
-    c = encode_cursor(dt, "abc")
-    back_dt, back_id = decode_cursor(c)
-    assert back_dt == dt and back_id == "abc"
+def _db(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path/'s.db'}",
+        connect_args={"check_same_thread": False}, poolclass=NullPool)
+    m.create_sync_tables(engine)
+    return engine, sessionmaker(bind=engine)
 
 
-def test_decode_cursor_empty():
-    assert decode_cursor(None) == (None, "")
-    assert decode_cursor("") == (None, "")
-
-
-def test_note_to_sync_dict_marks_deleted(tmp_path):
-    _, Session = _temp_db(tmp_path)
-    db = Session()
-    n = cdb.Note(id="n1", owner="alice", title="hi", deleted_at=datetime(2026, 7, 21))
-    db.add(n); db.commit()
-    d = note_to_sync_dict(n)
-    assert d["id"] == "n1" and d["deleted"] is True and d["title"] == "hi"
+def test_sync_tables_exist(tmp_path):
+    engine, _ = _db(tmp_path)
+    names = set(inspect(engine).get_table_names())
+    assert {"sync_task", "sync_change_log"} <= names
+    cols = {c["name"] for c in inspect(engine).get_columns("sync_task")}
+    assert {"id", "owner", "title", "sortOrder", "deletedAt", "updatedAt"} <= cols
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_sync_notes_pull_push.py -k "cursor or sync_dict" -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'src.sync'`.
+Run: `python -m pytest tests/test_sync_apply_pull.py::test_sync_tables_exist -v`
+Expected: FAIL — `No module named 'src.sync.models'`.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Implement the models**
 
 ```python
 # src/sync/__init__.py
 ```
 
 ```python
-# src/sync/note_sync.py
-"""Pure (no-FastAPI) sync helpers for the notes domain."""
-from __future__ import annotations
-from datetime import datetime
-
-_FIELDS = (
-    "title", "content", "items", "note_type", "color", "label",
-    "pinned", "archived", "due_date", "sort_order", "repeat",
-)
+# src/sync/models.py
+"""Sync-owned tables (separate from odysseus Notes). Column names are camelCase
+to match ember's wire field names so the ported client speaks them unchanged."""
+from sqlalchemy import Column, String, Text, Float, Integer, DateTime
+from core.database import Base, utcnow_naive
 
 
-def note_to_sync_dict(note) -> dict:
-    d = {f: getattr(note, f) for f in _FIELDS}
-    d["id"] = note.id
-    d["deleted"] = bool(note.deleted_at)
-    d["updated_at"] = note.updated_at.isoformat() if note.updated_at else None
-    return d
+class SyncTask(Base):
+    __tablename__ = "sync_task"
+    id = Column(String, primary_key=True)
+    owner = Column(String, index=True, nullable=False)
+    projectId = Column(String, nullable=True)
+    title = Column(String, default="")
+    notes = Column(Text, default="")
+    bucket = Column(String, default="today")            # today|soon|someday
+    scheduledAt = Column(String, nullable=True)          # ISO or null
+    scheduledDurationMin = Column(Integer, nullable=True)
+    sortOrder = Column(Float, default=0.0)
+    completedAt = Column(String, nullable=True)
+    createdAt = Column(String, nullable=True)            # client-set ISO
+    deletedAt = Column(String, nullable=True)            # tombstone (client-set ISO)
+    updatedAt = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive, nullable=False)
 
 
-def encode_cursor(updated_at: datetime, note_id: str) -> str:
-    return f"{updated_at.isoformat()}|{note_id}"
+class SyncChangeLog(Base):
+    __tablename__ = "sync_change_log"
+    seq = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String, index=True, nullable=False)
+    entity = Column(String, nullable=False)
+    entityId = Column(String, index=True, nullable=False)
+    fields = Column(Text, nullable=False)                # JSON: {field: {v, ts}}
+    deviceId = Column(String, nullable=False)
+    createdAt = Column(DateTime, default=utcnow_naive, nullable=False)
 
 
-def decode_cursor(cursor: str | None):
-    if not cursor:
-        return (None, "")
-    iso, _, note_id = cursor.partition("|")
-    return (datetime.fromisoformat(iso), note_id)
+def create_sync_tables(engine):
+    Base.metadata.create_all(engine, tables=[SyncTask.__table__, SyncChangeLog.__table__])
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_sync_notes_pull_push.py -k "cursor or sync_dict" -v`
+Run: `python -m pytest tests/test_sync_apply_pull.py::test_sync_tables_exist -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/sync/__init__.py src/sync/note_sync.py tests/test_sync_notes_pull_push.py
-git commit -m "feat(sync): pure note serialization + cursor helpers"
+git add src/sync/__init__.py src/sync/models.py tests/test_sync_apply_pull.py
+git commit -m "feat(sync): sync-owned task + change_log tables"
 ```
 
 ---
 
-### Task 3: `pull_notes` — changed-since query with cursor paging
+### Task 2: HLC comparison
 
 **Files:**
-- Modify: `src/sync/note_sync.py`
-- Test: `tests/test_sync_notes_pull_push.py`
+- Create: `src/sync/hlc.py`
+- Test: `tests/test_sync_hlc.py`
 
 **Interfaces:**
-- Produces: `pull_notes(db, owner: str, cursor: str | None, limit: int) -> dict` returning
-  `{"changes": [note_to_sync_dict...], "cursor": "<iso>|<id>" | cursor_in, "hasMore": bool}`.
-  Ordered by `(updated_at, id)` ascending; strictly after the decoded cursor; owner-scoped; includes tombstoned (deleted) rows.
+- Produces: `compare_hlc(a_ts: str, a_dev: str, b_ts: str, b_dev: str) -> int` → `-1|0|1`. Ports ember `compareHlc`: compare `ts` lexicographically; if equal, compare `deviceId`; else 0.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# append to tests/test_sync_notes_pull_push.py
-from datetime import timedelta
-from src.sync.note_sync import pull_notes
+# tests/test_sync_hlc.py
+from src.sync.hlc import compare_hlc
 
 
-def _mk(db, id, owner, updated):
-    n = cdb.Note(id=id, owner=owner, title=id)
-    db.add(n); db.commit()
-    n.updated_at = updated          # override auto stamp for deterministic ordering
-    db.commit()
-    return n
+def test_ts_dominates():
+    assert compare_hlc("2026-07-21T00:00:00.000Z-000002", "d1",
+                       "2026-07-21T00:00:00.000Z-000001", "d9") == 1
 
-
-def test_pull_filters_by_cursor_and_owner(tmp_path):
-    _, Session = _temp_db(tmp_path)
-    db = Session()
-    base = datetime(2026, 7, 21, 9, 0, 0)
-    _mk(db, "a", "alice", base)
-    _mk(db, "b", "alice", base + timedelta(minutes=1))
-    _mk(db, "z", "bob",   base + timedelta(minutes=2))
-
-    first = pull_notes(db, "alice", None, limit=1)
-    assert [c["id"] for c in first["changes"]] == ["a"]
-    assert first["hasMore"] is True
-
-    second = pull_notes(db, "alice", first["cursor"], limit=10)
-    assert [c["id"] for c in second["changes"]] == ["b"]
-    assert second["hasMore"] is False
-    # bob's note never appears for alice
-    assert all(c["id"] != "z" for c in first["changes"] + second["changes"])
+def test_device_tiebreak():
+    ts = "2026-07-21T00:00:00.000Z-000001"
+    assert compare_hlc(ts, "d1", ts, "d2") == -1
+    assert compare_hlc(ts, "d2", ts, "d2") == 0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_sync_notes_pull_push.py::test_pull_filters_by_cursor_and_owner -v`
-Expected: FAIL — `ImportError: cannot import name 'pull_notes'`.
+Run: `python -m pytest tests/test_sync_hlc.py -v`
+Expected: FAIL — `No module named 'src.sync.hlc'`.
 
 - [ ] **Step 3: Implement**
 
-Add to `src/sync/note_sync.py`:
-
 ```python
-from sqlalchemy import and_, or_, tuple_
-
-
-def pull_notes(db, owner: str, cursor: str | None, limit: int) -> dict:
-    from core.database import Note
-    since_dt, since_id = decode_cursor(cursor)
-    q = db.query(Note).filter(Note.owner == owner)
-    if since_dt is not None:
-        q = q.filter(
-            or_(
-                Note.updated_at > since_dt,
-                and_(Note.updated_at == since_dt, Note.id > since_id),
-            )
-        )
-    rows = q.order_by(Note.updated_at.asc(), Note.id.asc()).limit(limit + 1).all()
-    has_more = len(rows) > limit
-    rows = rows[:limit]
-    out_cursor = (
-        encode_cursor(rows[-1].updated_at, rows[-1].id) if rows else (cursor or "")
-    )
-    return {
-        "changes": [note_to_sync_dict(r) for r in rows],
-        "cursor": out_cursor,
-        "hasMore": has_more,
-    }
+# src/sync/hlc.py
+def compare_hlc(a_ts: str, a_dev: str, b_ts: str, b_dev: str) -> int:
+    if a_ts != b_ts:
+        return -1 if a_ts < b_ts else 1
+    if a_dev != b_dev:
+        return -1 if a_dev < b_dev else 1
+    return 0
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_sync_notes_pull_push.py::test_pull_filters_by_cursor_and_owner -v`
+Run: `python -m pytest tests/test_sync_hlc.py -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/sync/note_sync.py tests/test_sync_notes_pull_push.py
-git commit -m "feat(sync): pull_notes changed-since query with cursor paging"
+git add src/sync/hlc.py tests/test_sync_hlc.py
+git commit -m "feat(sync): HLC comparison (ember-faithful)"
 ```
 
 ---
 
-### Task 4: `apply_push_row` — client-authoritative upsert (owner-scoped)
+### Task 3: Field registry + winners reducer
 
 **Files:**
-- Modify: `src/sync/note_sync.py`
-- Test: `tests/test_sync_notes_pull_push.py`
+- Create: `src/sync/registry.py`, `src/sync/winners.py`
+- Test: `tests/test_sync_apply_pull.py`
 
 **Interfaces:**
-- Produces: `apply_push_row(db, owner: str, row: dict) -> dict` — upserts a note the caller owns.
-  Creates it if absent (owner set to caller), updates writable fields if present, sets/clears
-  `deleted_at` from `row["deleted"]`, commits through the ORM (so `updated_at` re-stamps), and
-  returns `note_to_sync_dict(note)`. Raises `PermissionError` if an existing `id` belongs to another owner.
+- Produces:
+  - `REGISTRY: dict[str, dict]` with `"task" -> {"model": SyncTask, "fields": [...]}`; fields = the SyncTask columns minus `id`, `owner`, `updatedAt`.
+  - `synced_fields(kind) -> list[str]`; `validate_field_value(kind, field, value) -> bool` (scalar-only: `str|int|float|bool|None`).
+  - `winners_from_rows(rows: list[SyncChangeLog]) -> dict[str, tuple[str, str]]` — highest-HLC `(ts, deviceId)` per field, using `compare_hlc`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# append to tests/test_sync_notes_pull_push.py
+# append to tests/test_sync_apply_pull.py
+import json
+from src.sync.registry import synced_fields, validate_field_value
+from src.sync.winners import winners_from_rows
+from src.sync.models import SyncChangeLog
+
+
+def test_synced_fields_and_validation():
+    f = synced_fields("task")
+    assert "title" in f and "id" not in f and "updatedAt" not in f
+    assert validate_field_value("task", "title", "hi") is True
+    assert validate_field_value("task", "title", {"nested": 1}) is False
+
+
+def test_winners_pick_highest_hlc():
+    rows = [
+        SyncChangeLog(owner="a", entity="task", entityId="t1", deviceId="d1",
+                      fields=json.dumps({"title": {"v": "old", "ts": "2026-01-01T00:00:00.000Z-000001"}})),
+        SyncChangeLog(owner="a", entity="task", entityId="t1", deviceId="d2",
+                      fields=json.dumps({"title": {"v": "new", "ts": "2026-01-01T00:00:00.000Z-000002"}})),
+    ]
+    w = winners_from_rows(rows)
+    assert w["title"] == ("2026-01-01T00:00:00.000Z-000002", "d2")
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_sync_apply_pull.py -k "synced_fields or winners" -v`
+Expected: FAIL — import errors.
+
+- [ ] **Step 3: Implement**
+
+```python
+# src/sync/registry.py
+from src.sync.models import SyncTask
+
+_EXCLUDED = {"id", "owner", "updatedAt"}
+
+
+def _columns(model) -> list[str]:
+    return [c.name for c in model.__table__.columns if c.name not in _EXCLUDED]
+
+
+REGISTRY = {
+    "task": {"model": SyncTask, "fields": _columns(SyncTask)},
+}
+
+
+def synced_fields(kind: str) -> list[str]:
+    return REGISTRY[kind]["fields"]
+
+
+def validate_field_value(kind: str, field: str, value) -> bool:
+    if field not in synced_fields(kind):
+        return False
+    return isinstance(value, (str, int, float, bool)) or value is None
+```
+
+```python
+# src/sync/winners.py
+import json
+from src.sync.hlc import compare_hlc
+
+
+def winners_from_rows(rows) -> dict:
+    winners: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        dev = row.deviceId
+        for field, fp in json.loads(row.fields).items():
+            ts = fp["ts"]
+            cur = winners.get(field)
+            if cur is None or compare_hlc(cur[0], cur[1], ts, dev) < 0:
+                winners[field] = (ts, dev)
+    return winners
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_sync_apply_pull.py -k "synced_fields or winners" -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/sync/registry.py src/sync/winners.py tests/test_sync_apply_pull.py
+git commit -m "feat(sync): field registry + HLC winners reducer"
+```
+
+---
+
+### Task 4: `apply_push` — per-field LWW upsert + change_log append
+
+**Files:**
+- Create: `src/sync/apply.py`
+- Test: `tests/test_sync_apply_pull.py`
+
+**Interfaces:**
+- Consumes: `REGISTRY`, `synced_fields`, `validate_field_value`, `winners_from_rows`, `compare_hlc`, models.
+- Produces: `apply_push(db, owner, device_id, patches) -> {"applied": int, "serverSeq": int}`.
+  For each patch `{entity, entityId, fields:{f:{v,ts}}}`: reject unknown/invalid fields (`ValueError("INVALID_FIELD"/"INVALID_VALUE")`); load or create the live row (owner check → `PermissionError`); compute current winners from that entity's change_log rows; keep only fields whose incoming `(ts, device_id)` beats the current winner (**strict `>`**); write winning values to the live row via ORM; append **one** `SyncChangeLog` row with the winning fields; commit. Returns count applied + max seq for owner.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# append to tests/test_sync_apply_pull.py
 import pytest
-from src.sync.note_sync import apply_push_row
+from src.sync.apply import apply_push
 
 
-def test_push_inserts_then_updates_and_deletes(tmp_path):
-    _, Session = _temp_db(tmp_path)
+def _patch(entity_id, **fields_ts):
+    return {"entity": "task", "entityId": entity_id,
+            "fields": {f: {"v": v, "ts": ts} for f, (v, ts) in fields_ts.items()}}
+
+
+TS1 = "2026-07-21T00:00:00.000Z-000001"
+TS2 = "2026-07-21T00:00:00.000Z-000002"
+
+
+def test_apply_creates_then_field_lww(tmp_path):
+    _, Session = _db(tmp_path)
     db = Session()
-    r = apply_push_row(db, "alice", {"id": "t1", "title": "Draft", "deleted": False})
-    assert r["title"] == "Draft" and r["deleted"] is False
+    r = apply_push(db, "alice", "dev1", [_patch("t1", title=("A", TS1), bucket=("today", TS1))])
+    assert r["applied"] == 1
+    row = db.query(m.SyncTask).get("t1")
+    assert row.title == "A" and row.owner == "alice"
 
-    r2 = apply_push_row(db, "alice", {"id": "t1", "title": "Draft v2", "deleted": False})
-    assert r2["title"] == "Draft v2"
+    # older ts loses, newer ts wins — per field
+    apply_push(db, "alice", "dev1", [_patch("t1", title=("STALE", TS1))])   # equal/old -> skipped
+    assert db.query(m.SyncTask).get("t1").title == "A"
+    apply_push(db, "alice", "dev1", [_patch("t1", title=("B", TS2))])       # newer -> wins
+    assert db.query(m.SyncTask).get("t1").title == "B"
 
-    r3 = apply_push_row(db, "alice", {"id": "t1", "deleted": True})
-    assert r3["deleted"] is True
 
-
-def test_push_rejects_other_owner(tmp_path):
-    _, Session = _temp_db(tmp_path)
+def test_apply_rejects_unknown_field(tmp_path):
+    _, Session = _db(tmp_path)
     db = Session()
-    apply_push_row(db, "alice", {"id": "x", "title": "mine", "deleted": False})
+    with pytest.raises(ValueError):
+        apply_push(db, "alice", "dev1",
+                   [{"entity": "task", "entityId": "t1", "fields": {"nope": {"v": 1, "ts": TS1}}}])
+
+
+def test_apply_owner_gate(tmp_path):
+    _, Session = _db(tmp_path)
+    db = Session()
+    apply_push(db, "alice", "dev1", [_patch("t1", title=("mine", TS1))])
     with pytest.raises(PermissionError):
-        apply_push_row(db, "bob", {"id": "x", "title": "steal", "deleted": False})
+        apply_push(db, "bob", "dev1", [_patch("t1", title=("steal", TS2))])
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_sync_notes_pull_push.py -k push -v`
-Expected: FAIL — `ImportError: cannot import name 'apply_push_row'`.
+Run: `python -m pytest tests/test_sync_apply_pull.py -k apply -v`
+Expected: FAIL — `No module named 'src.sync.apply'`.
 
 - [ ] **Step 3: Implement**
 
-Add to `src/sync/note_sync.py`:
-
 ```python
-_WRITABLE = (
-    "title", "content", "items", "note_type", "color", "label",
-    "pinned", "archived", "due_date", "sort_order", "repeat",
-)
+# src/sync/apply.py
+import json
+from src.sync.registry import REGISTRY, synced_fields, validate_field_value
+from src.sync.winners import winners_from_rows
+from src.sync.hlc import compare_hlc
+from src.sync.models import SyncChangeLog
 
 
-def apply_push_row(db, owner: str, row: dict) -> dict:
-    from core.database import Note
-    from core.database import utcnow_naive
-    note = db.query(Note).filter(Note.id == row["id"]).first()
-    if note is None:
-        note = Note(id=row["id"], owner=owner)
-        db.add(note)
-    elif note.owner != owner:
-        raise PermissionError("note belongs to another owner")
+def apply_push(db, owner: str, device_id: str, patches: list) -> dict:
+    applied = 0
+    for patch in patches:
+        entity = patch["entity"]
+        if entity not in REGISTRY:
+            raise ValueError("INVALID_FIELD")
+        model = REGISTRY[entity]["model"]
+        entity_id = patch["entityId"]
+        incoming = patch["fields"]
 
-    for f in _WRITABLE:
-        if f in row and row[f] is not None:
-            setattr(note, f, row[f])
+        for field, fp in incoming.items():
+            if field not in synced_fields(entity):
+                raise ValueError("INVALID_FIELD")
+            if not validate_field_value(entity, field, fp["v"]):
+                raise ValueError("INVALID_VALUE")
 
-    if row.get("deleted"):
-        note.deleted_at = utcnow_naive()
-    elif "deleted" in row:
-        note.deleted_at = None
+        row = db.query(model).get(entity_id)
+        if row is not None and row.owner != owner:
+            raise PermissionError("FORBIDDEN")
+
+        prior = (db.query(SyncChangeLog)
+                   .filter(SyncChangeLog.owner == owner,
+                           SyncChangeLog.entity == entity,
+                           SyncChangeLog.entityId == entity_id).all())
+        current = winners_from_rows(prior)
+
+        winning = {}
+        for field, fp in incoming.items():
+            cur = current.get(field)
+            if cur is None or compare_hlc(cur[0], cur[1], fp["ts"], device_id) < 0:
+                winning[field] = fp
+
+        if not winning:
+            continue
+
+        if row is None:
+            row = model(id=entity_id, owner=owner)
+            db.add(row)
+        for field, fp in winning.items():
+            setattr(row, field, fp["v"])
+
+        db.add(SyncChangeLog(owner=owner, entity=entity, entityId=entity_id,
+                             deviceId=device_id, fields=json.dumps(winning)))
+        applied += 1
 
     db.commit()
-    db.refresh(note)
-    return note_to_sync_dict(note)
+    max_seq = (db.query(SyncChangeLog.seq)
+                 .filter(SyncChangeLog.owner == owner)
+                 .order_by(SyncChangeLog.seq.desc()).first())
+    return {"applied": applied, "serverSeq": max_seq[0] if max_seq else 0}
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_sync_notes_pull_push.py -k push -v`
+Run: `python -m pytest tests/test_sync_apply_pull.py -k apply -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/sync/note_sync.py tests/test_sync_notes_pull_push.py
-git commit -m "feat(sync): apply_push_row client-authoritative upsert"
+git add src/sync/apply.py tests/test_sync_apply_pull.py
+git commit -m "feat(sync): apply_push per-field LWW + change_log append"
 ```
 
 ---
 
-### Task 5: Sync router (`/api/sync/ping|pull|push`) + app.py wiring
+### Task 5: `pull_changes` — incremental + cursor-0 snapshot
+
+**Files:**
+- Create: `src/sync/pull.py`
+- Test: `tests/test_sync_apply_pull.py`
+
+**Interfaces:**
+- Produces: `pull_changes(db, owner, cursor: int, limit: int) -> {"changes": [...], "cursor": int, "hasMore": bool}`.
+  - `cursor == 0`: synthesize one full-row change per live `sync_task` row owned by `owner` (including tombstoned), each field's `ts` = its winning ts from change_log (fallback `updatedAt.isoformat()+"Z-000000"`); `cursor` = current max change_log seq for owner; `hasMore` = False.
+  - `cursor > 0`: `SyncChangeLog` rows where `owner` and `seq > cursor`, ordered by `seq`, limit `limit`; map to `{seq, entity, entityId, fields}`; `cursor` = last seq; `hasMore = (len == limit and last < max_seq)`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# append to tests/test_sync_apply_pull.py
+from src.sync.pull import pull_changes
+
+
+def test_pull_bootstrap_then_incremental(tmp_path):
+    _, Session = _db(tmp_path)
+    db = Session()
+    apply_push(db, "alice", "dev1", [_patch("t1", title=("A", TS1))])
+
+    boot = pull_changes(db, "alice", 0, 500)
+    assert len(boot["changes"]) == 1
+    assert boot["changes"][0]["entityId"] == "t1"
+    assert boot["changes"][0]["fields"]["title"]["v"] == "A"
+    assert boot["hasMore"] is False
+    cursor = boot["cursor"]
+
+    apply_push(db, "alice", "dev1", [_patch("t1", title=("B", TS2))])
+    inc = pull_changes(db, "alice", cursor, 500)
+    assert [c["fields"]["title"]["v"] for c in inc["changes"]] == ["B"]
+    assert inc["cursor"] > cursor
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_sync_apply_pull.py -k pull -v`
+Expected: FAIL — `No module named 'src.sync.pull'`.
+
+- [ ] **Step 3: Implement**
+
+```python
+# src/sync/pull.py
+import json
+from src.sync.registry import REGISTRY, synced_fields
+from src.sync.winners import winners_from_rows
+from src.sync.models import SyncChangeLog
+
+
+def _max_seq(db, owner: str) -> int:
+    row = (db.query(SyncChangeLog.seq).filter(SyncChangeLog.owner == owner)
+             .order_by(SyncChangeLog.seq.desc()).first())
+    return row[0] if row else 0
+
+
+def pull_changes(db, owner: str, cursor: int, limit: int) -> dict:
+    if cursor <= 0:
+        changes = []
+        for entity, spec in REGISTRY.items():
+            model = spec["model"]
+            for row in db.query(model).filter(model.owner == owner).all():
+                prior = (db.query(SyncChangeLog)
+                           .filter(SyncChangeLog.owner == owner,
+                                   SyncChangeLog.entity == entity,
+                                   SyncChangeLog.entityId == row.id).all())
+                winners = winners_from_rows(prior)
+                fallback_ts = (row.updatedAt.isoformat() + "Z-000000") if row.updatedAt else "1970-01-01T00:00:00.000Z-000000"
+                fields = {}
+                for f in synced_fields(entity):
+                    v = getattr(row, f)
+                    ts = winners[f][0] if f in winners else fallback_ts
+                    fields[f] = {"v": v, "ts": ts}
+                changes.append({"seq": 0, "entity": entity, "entityId": row.id, "fields": fields})
+        return {"changes": changes, "cursor": _max_seq(db, owner), "hasMore": False}
+
+    rows = (db.query(SyncChangeLog)
+              .filter(SyncChangeLog.owner == owner, SyncChangeLog.seq > cursor)
+              .order_by(SyncChangeLog.seq.asc()).limit(limit).all())
+    changes = [{"seq": r.seq, "entity": r.entity, "entityId": r.entityId,
+                "fields": json.loads(r.fields)} for r in rows]
+    out_cursor = rows[-1].seq if rows else cursor
+    has_more = len(rows) == limit and out_cursor < _max_seq(db, owner)
+    return {"changes": changes, "cursor": out_cursor, "hasMore": has_more}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_sync_apply_pull.py -k pull -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/sync/pull.py tests/test_sync_apply_pull.py
+git commit -m "feat(sync): pull_changes incremental + cursor-0 snapshot"
+```
+
+---
+
+### Task 6: Sync router + app.py wiring
 
 **Files:**
 - Create: `routes/sync_routes.py`
-- Modify: `app.py` (one import + one `include_router` line in the router-registration block near the notes registration ~line 832)
-- Test: `tests/test_sync_notes_pull_push.py`
+- Modify: `app.py` (one import + one `include_router` near the notes registration ~line 832)
+- Test: `tests/test_sync_routes.py`
 
 **Interfaces:**
-- Consumes: `pull_notes`, `apply_push_row` (Task 3/4); odysseus `require_user`, `SessionLocal`.
-- Produces: `setup_sync_routes() -> APIRouter` with:
-  - `GET /api/sync/ping` → `{"ok": True, "user": <owner>}`
-  - `GET /api/sync/pull?cursor=&limit=` → `pull_notes(...)`
-  - `POST /api/sync/push` body `{"rows": [ {id,...,deleted}, ... ]}` → `{"results": [sync_dict...]}`
+- Produces: `setup_sync_routes() -> APIRouter` (`/api/sync`), creating the sync tables on setup, with:
+  - `GET /ping` → `{"ok": True, "user": owner}`
+  - `POST /push` body `{deviceId, patches}` → `apply_push(...)`; maps `ValueError`→400 `{error:<code>}`, `PermissionError`→403 `{error:"FORBIDDEN"}`.
+  - `GET /pull?cursor=&limit=` → `pull_changes(...)` (cursor default 0, limit clamped 1..500).
 
-- [ ] **Step 1: Write the failing test** (uses odysseus's ASGITransport + `x-test-user` pattern)
+- [ ] **Step 1: Write the failing test** (odysseus ASGITransport + `x-test-user` shim)
 
 ```python
-# append to tests/test_sync_notes_pull_push.py
+# tests/test_sync_routes.py
 import httpx
 from types import SimpleNamespace
 from fastapi import FastAPI
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
+import src.sync.models as m
+
+TS1 = "2026-07-21T00:00:00.000Z-000001"
 
 
 class _Identity:
@@ -450,64 +587,69 @@ class _Identity:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             hdrs = dict(scope.get("headers") or [])
-            user = hdrs.get(b"x-test-user")
+            u = hdrs.get(b"x-test-user")
             scope.setdefault("state", {})
-            scope["state"]["current_user"] = user.decode() if user else None
+            scope["state"]["current_user"] = u.decode() if u else None
         await self.app(scope, receive, send)
 
 
-def _sync_app(Session, monkeypatch):
+def _app(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path/'s.db'}",
+        connect_args={"check_same_thread": False}, poolclass=NullPool)
+    Session = sessionmaker(bind=engine)
     import routes.sync_routes as sr
     monkeypatch.setattr(sr, "SessionLocal", Session)
+    monkeypatch.setattr(sr, "engine", engine)
     app = FastAPI()
     app.state.auth_manager = SimpleNamespace(is_configured=True)
     app.include_router(sr.setup_sync_routes())
     return _Identity(app)
 
 
-def _client(app):
+def _c(app):
     t = httpx.ASGITransport(app=app, client=("203.0.113.7", 54321))
     return httpx.AsyncClient(transport=t, base_url="http://sync.test")
 
 
-async def test_push_then_pull_roundtrip(tmp_path, monkeypatch):
-    _, Session = _temp_db(tmp_path)
-    app = _sync_app(Session, monkeypatch)
+async def test_push_then_pull(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
     alice = {"x-test-user": "alice"}
-    async with _client(app) as c:
-        r = await c.post("/api/sync/push",
-                         json={"rows": [{"id": "t1", "title": "Buy milk", "deleted": False}]},
-                         headers=alice)
-        assert r.status_code == 200
-        pulled = (await c.get("/api/sync/pull", headers=alice)).json()
-        assert [ch["title"] for ch in pulled["changes"]] == ["Buy milk"]
+    async with _c(app) as c:
+        body = {"deviceId": "dev1", "patches": [
+            {"entity": "task", "entityId": "t1", "fields": {"title": {"v": "Buy milk", "ts": TS1}}}]}
+        r = await c.post("/api/sync/push", json=body, headers=alice)
+        assert r.status_code == 200 and r.json()["applied"] == 1
+        pulled = (await c.get("/api/sync/pull?cursor=0", headers=alice)).json()
+        assert pulled["changes"][0]["fields"]["title"]["v"] == "Buy milk"
 
 
 async def test_pull_requires_auth(tmp_path, monkeypatch):
-    _, Session = _temp_db(tmp_path)
-    app = _sync_app(Session, monkeypatch)
-    async with _client(app) as c:
-        r = await c.get("/api/sync/pull")   # no x-test-user
+    app = _app(tmp_path, monkeypatch)
+    async with _c(app) as c:
+        r = await c.get("/api/sync/pull?cursor=0")
         assert r.status_code in (401, 403)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_sync_notes_pull_push.py -k "roundtrip or requires_auth" -v`
+Run: `python -m pytest tests/test_sync_routes.py -v`
 Expected: FAIL — `No module named 'routes.sync_routes'`.
 
 - [ ] **Step 3: Implement the router**
 
 ```python
 # routes/sync_routes.py
-"""Local-first sync endpoints for the notes domain (browser cookie auth)."""
+"""Per-field local-first sync endpoints (browser cookie auth for Slice 1)."""
 from fastapi import APIRouter, Request, HTTPException
-from core.database import SessionLocal
+from core.database import SessionLocal, engine
 from src.auth_helpers import require_user
-from src.sync.note_sync import pull_notes, apply_push_row
+from src.sync.models import create_sync_tables
+from src.sync.apply import apply_push
+from src.sync.pull import pull_changes
 
 
 def setup_sync_routes() -> APIRouter:
+    create_sync_tables(engine)
     router = APIRouter(prefix="/api/sync", tags=["sync"])
 
     def _owner(request: Request) -> str:
@@ -520,32 +662,33 @@ def setup_sync_routes() -> APIRouter:
     async def ping(request: Request):
         return {"ok": True, "user": _owner(request)}
 
-    @router.get("/pull")
-    async def pull(request: Request, cursor: str | None = None, limit: int = 500):
-        owner = _owner(request)
-        limit = max(1, min(limit, 500))
-        db = SessionLocal()
-        try:
-            return pull_notes(db, owner, cursor, limit)
-        finally:
-            db.close()
-
     @router.post("/push")
     async def push(request: Request):
         owner = _owner(request)
         body = await request.json()
-        rows = body.get("rows") or []
-        if len(rows) > 200:
-            raise HTTPException(400, "too many rows (max 200)")
+        device_id = (body.get("deviceId") or "").strip()
+        patches = body.get("patches") or []
+        if not device_id or len(patches) > 200:
+            raise HTTPException(400, "INVALID_BODY")
         db = SessionLocal()
         try:
-            results = []
-            for row in rows:
-                try:
-                    results.append(apply_push_row(db, owner, row))
-                except PermissionError:
-                    raise HTTPException(403, "forbidden")
-            return {"results": results}
+            return apply_push(db, owner, device_id, patches)
+        except PermissionError:
+            db.rollback()
+            raise HTTPException(403, "FORBIDDEN")
+        except ValueError as e:
+            db.rollback()
+            raise HTTPException(400, str(e))
+        finally:
+            db.close()
+
+    @router.get("/pull")
+    async def pull(request: Request, cursor: int = 0, limit: int = 500):
+        owner = _owner(request)
+        limit = max(1, min(limit, 500))
+        db = SessionLocal()
+        try:
+            return pull_changes(db, owner, cursor, limit)
         finally:
             db.close()
 
@@ -554,721 +697,272 @@ def setup_sync_routes() -> APIRouter:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_sync_notes_pull_push.py -k "roundtrip or requires_auth" -v`
+Run: `python -m pytest tests/test_sync_routes.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Wire into app.py**
+- [ ] **Step 5: Wire into app.py + full backend run**
 
-In `app.py`, in the router-registration block near the notes registration (~line 832), add:
+In `app.py`, near the notes registration (~line 832):
 
 ```python
-# Local-first sync (SPA at /app)
+# Local-first per-field sync (SPA at /app)
 from routes.sync_routes import setup_sync_routes
 app.include_router(setup_sync_routes())
 ```
 
-- [ ] **Step 6: Full backend test run + commit**
-
-Run: `python -m pytest tests/test_sync_notes_pull_push.py -v`
+Run: `python -m pytest tests/test_sync_hlc.py tests/test_sync_apply_pull.py tests/test_sync_routes.py -v`
 Expected: all PASS.
 
 ```bash
-git add routes/sync_routes.py app.py tests/test_sync_notes_pull_push.py
-git commit -m "feat(sync): /api/sync ping/pull/push router + app wiring"
+git add routes/sync_routes.py app.py tests/test_sync_routes.py
+git commit -m "feat(sync): /api/sync push/pull router + app wiring"
 ```
 
 ---
 
-### Task 6: Scaffold the `webapp/` Vite + React SPA
+### Task 7: Scaffold the `webapp/` SPA
 
-**Files:**
-- Create: `webapp/package.json`, `webapp/vite.config.ts`, `webapp/tsconfig.json`, `webapp/index.html`, `webapp/src/main.tsx`, `webapp/src/App.tsx`
-- Modify: `.gitignore`
+Identical to a standard Vite+React+PWA scaffold. **Files:** `webapp/{package.json,vite.config.ts,tsconfig.json,index.html}`, `webapp/src/{main.tsx,App.tsx}`, `.gitignore` entries; add `zod` to dependencies (client reuses ember's zod wire schemas).
 
-**Interfaces:**
-- Produces: a dev server (`npm run dev`) and a production build to `webapp/dist` whose assets are served under `/app-assets/` (`base` config), so paths resolve when odysseus serves it at `/app`.
-
-- [ ] **Step 1: Add gitignore entries**
-
-Append to `/home/elsiga/labspace/odysseus/.gitignore`:
-
+- [ ] **Step 1: gitignore** — append to `.gitignore`:
 ```
 # New SPA (webapp/) build + deps
 webapp/node_modules/
 webapp/dist/
 ```
 
-- [ ] **Step 2: Create the SPA scaffold**
+- [ ] **Step 2: Scaffold** — create `webapp/package.json` (deps: `dexie@^4`, `react@^18`, `react-dom@^18`, `zod@^3`; devDeps: `@types/react`, `@types/react-dom`, `@vitejs/plugin-react`, `fake-indexeddb`, `typescript@^5`, `vite@^5`, `vite-plugin-pwa`, `vitest@^2`, `jsdom`), `vite.config.ts` (`base:"/app-assets/"`, react + VitePWA plugins, dev `server.proxy` `/api → http://localhost:7000`), `tsconfig.json` (strict, `jsx:"react-jsx"`), `index.html`, `src/main.tsx`, `src/App.tsx` (placeholder `<h1>Odysseus Tasks</h1>`), `vitest.config.ts` (`environment:"jsdom"`, `setupFiles:["src/test-setup.ts"]`), `src/test-setup.ts` (`import "fake-indexeddb/auto"`).
 
-```json
-// webapp/package.json
-{
-  "name": "odysseus-webapp",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview",
-    "test": "vitest run"
-  },
-  "dependencies": { "dexie": "^4.0.8", "react": "^18.3.1", "react-dom": "^18.3.1" },
-  "devDependencies": {
-    "@types/react": "^18.3.3", "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.1", "fake-indexeddb": "^6.0.0",
-    "typescript": "^5.5.4", "vite": "^5.4.0", "vite-plugin-pwa": "^0.20.5",
-    "vitest": "^2.0.5"
-  }
-}
-```
-
-```ts
-// webapp/vite.config.ts
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import { VitePWA } from "vite-plugin-pwa";
-
-export default defineConfig({
-  base: "/app-assets/",
-  plugins: [react(), VitePWA({ registerType: "autoUpdate" })],
-  server: { proxy: { "/api": "http://localhost:7000" } },
-  build: { outDir: "dist" },
-});
-```
-
-```json
-// webapp/tsconfig.json
-{
-  "compilerOptions": {
-    "target": "ES2020", "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"], "module": "ESNext",
-    "skipLibCheck": true, "moduleResolution": "bundler",
-    "resolveJsonModule": true, "isolatedModules": true, "noEmit": true,
-    "jsx": "react-jsx", "strict": true
-  },
-  "include": ["src"]
-}
-```
-
-```html
-<!-- webapp/index.html -->
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Odysseus Tasks</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
-```
-
-```tsx
-// webapp/src/main.tsx
-import React from "react";
-import { createRoot } from "react-dom/client";
-import { App } from "./App";
-
-createRoot(document.getElementById("root")!).render(
-  <React.StrictMode><App /></React.StrictMode>
-);
-```
-
-```tsx
-// webapp/src/App.tsx
-export function App() {
-  return <h1>Odysseus Tasks</h1>;
-}
-```
-
-- [ ] **Step 3: Install and verify the build**
-
-Run (on your Mac or wherever Node is available):
-```bash
-cd webapp && npm install && npm run build
-```
-Expected: `webapp/dist/index.html` and `webapp/dist/assets/*` produced, exit 0.
+- [ ] **Step 3: Verify** — Run: `cd webapp && npm install && npm run build` → exit 0, `webapp/dist` produced.
 
 - [ ] **Step 4: Commit**
-
 ```bash
-git add webapp/package.json webapp/vite.config.ts webapp/tsconfig.json webapp/index.html webapp/src/main.tsx webapp/src/App.tsx webapp/package-lock.json .gitignore
-git commit -m "feat(webapp): scaffold Vite + React SPA"
+git add webapp .gitignore && git commit -m "feat(webapp): scaffold Vite + React SPA"
 ```
 
 ---
 
-### Task 7: Dexie local store + note repo (with outbox)
+### Task 8: Port ember's shared sync core
 
 **Files:**
-- Create: `webapp/src/db/db.ts`, `webapp/src/db/repo.ts`, `webapp/src/test-setup.ts`, `webapp/vitest.config.ts`
-- Test: `webapp/src/db/db.test.ts`
+- Create by copying from ember (read `/home/elsiga/labspace/ember/packages/shared/src/*` and reproduce): `webapp/src/shared/hlc.ts`, `webapp/src/shared/sync.ts`, `webapp/src/shared/entities.ts`, `webapp/src/shared/domain/tasks.ts`, `webapp/src/shared/domain/sortOrder.ts`, `webapp/src/shared/index.ts` (barrel).
+- Test: `webapp/src/shared/hlc.test.ts`
 
-**Interfaces:**
-- Produces:
-  - `NoteRow = { id; title; content; items; note_type; color; label; pinned; archived; due_date; sort_order; repeat; deleted; updated_at; _dirty: 0|1 }`
-  - `OutboxRow = { seq?: number; id: string }`
-  - `db` (Dexie) with tables `notes` (`id, updated_at, _dirty`), `outbox` (`++seq, id`), `syncMeta` (`key`).
-  - Repo: `syncedPut(row)`, `createNote({title})`, `updateNote(id, patch)`, `deleteNote(id)`, `liveNotes(): Promise<NoteRow[]>` (excludes `deleted`, ordered by `sort_order` then `updated_at`).
+**Interfaces (as ported, verbatim from ember):**
+- `hlc.ts`: `HlcStamp`, `hlcTimestamp(wallIso, counter)`, `compareHlc(a, b)`.
+- `sync.ts`: zod `entityKindSchema/EntityKind`, `fieldPatchSchema/FieldPatch`, `entityPatchSchema/EntityPatch`, `pushRequestSchema/PushRequest`, `pushResponseSchema/PushResponse`, `pullChangeSchema/PullChange`, `pullResponseSchema/PullResponse`.
+- `entities.ts`: `taskSchema/Task`, `bucketSchema` (Slice-1 subset — task only; other entities may be dropped from the enum in `sync.ts` to `['task']`).
+- `domain/tasks.ts`, `domain/sortOrder.ts`: pure field-builders.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Copy the files** — read each ember source and write the identical content to the `webapp/src/shared/...` path. In `sync.ts`, reduce `entityKindSchema` to `z.enum(['task'])` for Slice 1. `index.ts` re-exports from `./hlc`, `./sync`, `./entities`, `./domain/tasks`, `./domain/sortOrder`.
+
+- [ ] **Step 2: Write the port-verification test**
 
 ```ts
-// webapp/src/db/db.test.ts
+// webapp/src/shared/hlc.test.ts
+import { describe, it, expect } from "vitest";
+import { compareHlc, hlcTimestamp } from "./hlc";
+
+describe("hlc", () => {
+  it("orders by ts then deviceId, strict", () => {
+    const a = { ts: hlcTimestamp("2026-07-21T00:00:00.000Z", 2), deviceId: "d1" };
+    const b = { ts: hlcTimestamp("2026-07-21T00:00:00.000Z", 1), deviceId: "d9" };
+    expect(compareHlc(a, b)).toBe(1);
+    expect(compareHlc(a, a)).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 3: Run** — `cd webapp && npx vitest run src/shared/hlc.test.ts` → PASS.
+
+- [ ] **Step 4: Commit**
+```bash
+git add webapp/src/shared && git commit -m "feat(webapp): port ember shared sync core (task-only)"
+```
+
+---
+
+### Task 9: Port ember client store + synced writes (task-only)
+
+**Files:**
+- Create by porting from ember `apps/web/src/db/db.ts`, `apps/web/src/sync/hlc.ts`, `apps/web/src/sync/localWrite.ts`, `apps/web/src/db/repo/tasks.ts`:
+  `webapp/src/db/db.ts` (Dexie — keep only `tasks`, `outbox`, `syncMeta`, `settings`, `activeTimer`; drop subtasks/projects/sessions/memoryEntries for Slice 1), `webapp/src/sync/hlc.ts` (`getDeviceId`, `nextHlc`), `webapp/src/sync/localWrite.ts` (`syncedCreate`, `syncedUpdate`, `setLocalWriteListener`, `notifySyncOfLocalWrite`), `webapp/src/db/repo/tasks.ts`.
+- Test: `webapp/src/db/tasks.test.ts`
+
+**Interfaces (ported):** `db` (Dexie, name `"odysseus-app"`); `TaskRow = Task & {_dirty:0|1; _fieldTs?:Record<string,string>}`; `OutboxRow`; repo `createTask`, `updateTask`, `completeTask`, `deleteTask`, `liveTasksByBucket`, `liveTodayTasks`, `setTaskSortOrder`.
+
+- [ ] **Step 1: Port the files** — reproduce ember's content with the reduced table set; imports point at `../shared` instead of `@ember/shared`.
+
+- [ ] **Step 2: Write the test**
+
+```ts
+// webapp/src/db/tasks.test.ts
 import { describe, it, expect, beforeEach } from "vitest";
 import { db } from "./db";
-import { createNote, updateNote, deleteNote, liveNotes } from "./repo";
+import { createTask, updateTask, deleteTask, liveTodayTasks } from "./repo/tasks";
 
 beforeEach(async () => { await db.delete(); await db.open(); });
 
-describe("note repo", () => {
-  it("create writes a dirty row and an outbox entry", async () => {
-    const n = await createNote({ title: "Buy milk" });
-    expect((await db.notes.get(n.id))!._dirty).toBe(1);
-    expect(await db.outbox.count()).toBe(1);
+describe("task repo", () => {
+  it("create journals to outbox with a dirty row + field ts", async () => {
+    const t = await createTask({ title: "Buy milk", bucket: "today" });
+    const row = await db.tasks.get(t.id);
+    expect(row!._dirty).toBe(1);
+    expect(row!._fieldTs?.title).toBeDefined();
+    expect(await db.outbox.count()).toBeGreaterThan(0);
   });
 
-  it("update mutates fields and re-queues outbox", async () => {
-    const n = await createNote({ title: "A" });
-    await updateNote(n.id, { title: "B" });
-    expect((await db.notes.get(n.id))!.title).toBe("B");
-  });
-
-  it("delete tombstones and hides from liveNotes", async () => {
-    const n = await createNote({ title: "X" });
-    await deleteNote(n.id);
-    expect((await db.notes.get(n.id))!.deleted).toBe(true);
-    expect(await liveNotes()).toHaveLength(0);
+  it("delete tombstones and drops from live list", async () => {
+    const t = await createTask({ title: "X", bucket: "today" });
+    await deleteTask(t.id);
+    const live = await liveTodayTasks();
+    expect(live.find((r) => r.id === t.id)).toBeUndefined();
   });
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 3: Run** — `cd webapp && npx vitest run src/db/tasks.test.ts` → PASS.
 
-Run: `cd webapp && npx vitest run src/db/db.test.ts`
-Expected: FAIL — cannot resolve `./db`.
-
-- [ ] **Step 3: Implement**
-
-```ts
-// webapp/src/test-setup.ts
-import "fake-indexeddb/auto";
-```
-
-```ts
-// webapp/vitest.config.ts
-import { defineConfig } from "vitest/config";
-export default defineConfig({
-  test: { environment: "jsdom", setupFiles: ["src/test-setup.ts"] },
-});
-```
-
-```ts
-// webapp/src/db/db.ts
-import Dexie, { type Table } from "dexie";
-
-export interface NoteRow {
-  id: string; title: string; content: string | null; items: string | null;
-  note_type: string; color: string | null; label: string | null;
-  pinned: boolean; archived: boolean; due_date: string | null;
-  sort_order: number; repeat: string; deleted: boolean;
-  updated_at: string | null; _dirty: 0 | 1;
-}
-export interface OutboxRow { seq?: number; id: string; }
-export interface KV { key: string; value: unknown; }
-
-class AppDB extends Dexie {
-  notes!: Table<NoteRow, string>;
-  outbox!: Table<OutboxRow, number>;
-  syncMeta!: Table<KV, string>;
-  constructor() {
-    super("odysseus-app");
-    this.version(1).stores({
-      notes: "id, updated_at, _dirty",
-      outbox: "++seq, id",
-      syncMeta: "key",
-    });
-  }
-}
-export const db = new AppDB();
-```
-
-```ts
-// webapp/src/db/repo.ts
-import { db, type NoteRow } from "./db";
-
-let notifyLocalWrite: () => void = () => {};
-export function setLocalWriteListener(fn: () => void) { notifyLocalWrite = fn; }
-
-function newId(): string {
-  return (crypto as any).randomUUID?.() ?? `id-${Date.now()}-${Math.floor(Math.random()*1e9)}`;
-}
-
-export async function syncedPut(row: NoteRow): Promise<void> {
-  await db.transaction("rw", db.notes, db.outbox, async () => {
-    await db.notes.put({ ...row, _dirty: 1 });
-    await db.outbox.add({ id: row.id });
-  });
-  notifyLocalWrite();
-}
-
-export async function createNote({ title }: { title: string }): Promise<NoteRow> {
-  const row: NoteRow = {
-    id: newId(), title, content: null, items: null, note_type: "note",
-    color: null, label: null, pinned: false, archived: false, due_date: null,
-    sort_order: 0, repeat: "none", deleted: false, updated_at: null, _dirty: 1,
-  };
-  await syncedPut(row);
-  return row;
-}
-
-export async function updateNote(id: string, patch: Partial<NoteRow>): Promise<void> {
-  const existing = await db.notes.get(id);
-  if (!existing) return;
-  await syncedPut({ ...existing, ...patch, id });
-}
-
-export async function deleteNote(id: string): Promise<void> {
-  const existing = await db.notes.get(id);
-  if (!existing) return;
-  await syncedPut({ ...existing, deleted: true });
-}
-
-export async function liveNotes(): Promise<NoteRow[]> {
-  const all = await db.notes.toArray();
-  return all
-    .filter((n) => !n.deleted)
-    .sort((a, b) => a.sort_order - b.sort_order || (a.updated_at ?? "").localeCompare(b.updated_at ?? ""));
-}
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cd webapp && npx vitest run src/db/db.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
+- [ ] **Step 4: Commit**
 ```bash
-git add webapp/src/db webapp/src/test-setup.ts webapp/vitest.config.ts
-git commit -m "feat(webapp): Dexie store + note repo with outbox"
+git add webapp/src/db webapp/src/sync/hlc.ts webapp/src/sync/localWrite.ts
+git commit -m "feat(webapp): port ember Dexie store + synced task writes"
 ```
 
 ---
 
-### Task 8: Sync client engine (push + pull + apply, dirty-aware)
+### Task 10: Port ember sync engine + status (task-only)
 
 **Files:**
-- Create: `webapp/src/sync/engine.ts`, `webapp/src/sync/status.ts`
+- Create by porting `apps/web/src/sync/engine.ts`, `apps/web/src/sync/status.ts`, `apps/web/src/sync/client.ts`:
+  `webapp/src/sync/engine.ts` (`createSyncClient`), `webapp/src/sync/status.ts`, `webapp/src/sync/client.ts`.
 - Test: `webapp/src/sync/engine.test.ts`
 
-**Interfaces:**
-- Consumes: `db`, `NoteRow` (Task 7).
-- Produces: `createSyncClient({ apiBase, fetchFn }) -> { syncOnce(): Promise<void>; start(): void; stop(): void }`.
-  - `pushOnce`: reads distinct outbox ids, POSTs `{rows:[NoteRow-without-meta...]}` to `${apiBase}/push`; on 2xx clears those outbox rows and marks pushed notes `_dirty:0`.
-  - `pullOnce`: GET `${apiBase}/pull?cursor=<c>`, applies each change to `notes` **only when the local row is not `_dirty`** (never clobber unsynced edits), persists `syncMeta['cursor']`, loops while `hasMore`.
+**Interfaces (ported):** `createSyncClient({db?, apiBase, getToken, fetchFn?}) -> {syncOnce, start, stop}`. Adaptations: `apiBase` default `"/api/sync"`; `getToken` returns `null` (browser cookie auth — no bearer in Slice 1); `TABLES` maps only `task -> db.tasks`; endpoints `POST ${apiBase}/push`, `GET ${apiBase}/pull?cursor=`.
 
-- [ ] **Step 1: Write the failing test** (mocked `fetch`)
+- [ ] **Step 1: Port** — reproduce ember's engine with `TABLES = { task: db.tasks }`, the entity enum reduced, and `api()` omitting the `Authorization` header when `getToken()` is null.
+
+- [ ] **Step 2: Write the round-trip test** (mocked fetch, per-field apply)
 
 ```ts
 // webapp/src/sync/engine.test.ts
 import { describe, it, expect, beforeEach } from "vitest";
 import { db } from "../db/db";
-import { createNote, liveNotes } from "../db/repo";
+import { createTask } from "../db/repo/tasks";
 import { createSyncClient } from "./engine";
 
 beforeEach(async () => { await db.delete(); await db.open(); });
 
-function fakeFetch(handlers: Record<string, (url: URL, init?: RequestInit) => any>) {
+function fake(handlers: Record<string, (u: URL, i?: RequestInit) => any>) {
   return async (input: string, init?: RequestInit) => {
-    const url = new URL(input, "http://t");
-    const key = `${init?.method ?? "GET"} ${url.pathname}`;
-    const body = handlers[key](url, init);
+    const u = new URL(input, "http://t");
+    const body = handlers[`${init?.method ?? "GET"} ${u.pathname}`](u, init);
     return { ok: true, status: 200, json: async () => body } as Response;
   };
 }
 
 describe("sync engine", () => {
-  it("push sends dirty rows then clears the outbox", async () => {
-    const n = await createNote({ title: "Buy milk" });
+  it("pushes dirty rows then clears outbox", async () => {
+    const t = await createTask({ title: "Buy milk", bucket: "today" });
     let pushed: any = null;
-    const fetchFn = fakeFetch({
-      "POST /api/sync/push": (_u, init) => { pushed = JSON.parse(init!.body as string); return { results: [] }; },
-      "GET /api/sync/pull": () => ({ changes: [], cursor: "", hasMore: false }),
+    const fetchFn = fake({
+      "POST /api/sync/push": (_u, i) => { pushed = JSON.parse(i!.body as string); return { applied: 1, serverSeq: 1 }; },
+      "GET /api/sync/pull": () => ({ changes: [], cursor: 0, hasMore: false }),
     });
-    const client = createSyncClient({ apiBase: "/api/sync", fetchFn });
+    const client = createSyncClient({ apiBase: "/api/sync", getToken: async () => null, fetchFn });
     await client.syncOnce();
-    expect(pushed.rows[0].id).toBe(n.id);
+    expect(pushed.patches[0].entityId).toBe(t.id);
+    expect(pushed.patches[0].fields.title.v).toBe("Buy milk");
     expect(await db.outbox.count()).toBe(0);
-    expect((await db.notes.get(n.id))!._dirty).toBe(0);
   });
 
-  it("pull inserts a server row but does not clobber a dirty local row", async () => {
-    const dirty = await createNote({ title: "local edit" });
-    const fetchFn = fakeFetch({
-      "POST /api/sync/push": () => ({ results: [] }),
-      "GET /api/sync/pull": (url) => url.searchParams.get("cursor")
-        ? { changes: [], cursor: url.searchParams.get("cursor"), hasMore: false }
-        : { changes: [
-              { id: "srv1", title: "from server", deleted: false, updated_at: "2026-07-21T10:00:00", sort_order: 0, note_type: "note", repeat: "none", pinned: false, archived: false, content: null, items: null, color: null, label: null, due_date: null },
-              { id: dirty.id, title: "SERVER WINS?", deleted: false, updated_at: "2026-07-21T10:00:00", sort_order: 0, note_type: "note", repeat: "none", pinned: false, archived: false, content: null, items: null, color: null, label: null, due_date: null },
-            ], cursor: "2026-07-21T10:00:00|srv1", hasMore: false },
+  it("applies a remote field only when its ts is newer (strict LWW)", async () => {
+    const t = await createTask({ title: "local", bucket: "today" });
+    // make the local row clean so pull may apply
+    const row = await db.tasks.get(t.id); await db.tasks.put({ ...row!, _dirty: 0 });
+    const newTs = "2999-01-01T00:00:00.000Z-000001";
+    const fetchFn = fake({
+      "POST /api/sync/push": () => ({ applied: 0, serverSeq: 0 }),
+      "GET /api/sync/pull": (u) => Number(u.searchParams.get("cursor")) > 0
+        ? { changes: [], cursor: 1, hasMore: false }
+        : { changes: [{ seq: 1, entity: "task", entityId: t.id, fields: { title: { v: "remote wins", ts: newTs } } }], cursor: 1, hasMore: false },
     });
-    const client = createSyncClient({ apiBase: "/api/sync", fetchFn });
+    const client = createSyncClient({ apiBase: "/api/sync", getToken: async () => null, fetchFn });
     await client.syncOnce();
-    const titles = (await liveNotes()).map((n) => n.title).sort();
-    expect(titles).toContain("from server");
-    expect((await db.notes.get(dirty.id))!.title).toBe("local edit"); // not clobbered
+    expect((await db.tasks.get(t.id))!.title).toBe("remote wins");
   });
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 3: Run** — `cd webapp && npx vitest run src/sync/engine.test.ts` → PASS.
 
-Run: `cd webapp && npx vitest run src/sync/engine.test.ts`
-Expected: FAIL — cannot resolve `./engine`.
-
-- [ ] **Step 3: Implement**
-
-```ts
-// webapp/src/sync/status.ts
-export type SyncStatus = "idle" | "syncing" | "offline" | "error";
-let status: SyncStatus = "idle";
-const subs = new Set<() => void>();
-export function getSyncStatus() { return status; }
-export function setSyncStatus(s: SyncStatus) { status = s; subs.forEach((f) => f()); }
-export function subscribeSyncStatus(fn: () => void) { subs.add(fn); return () => subs.delete(fn); }
-```
-
-```ts
-// webapp/src/sync/engine.ts
-import { db, type NoteRow } from "../db/db";
-import { setLocalWriteListener } from "../db/repo";
-import { setSyncStatus } from "./status";
-
-const META_FIELDS = new Set(["_dirty"]);
-const CURSOR_KEY = "cursor";
-
-export interface SyncClient { syncOnce(): Promise<void>; start(): void; stop(): void; }
-interface Opts { apiBase: string; fetchFn?: typeof fetch; }
-
-function stripMeta(row: NoteRow): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(row)) if (!META_FIELDS.has(k)) out[k] = v;
-  return out;
-}
-
-export function createSyncClient(opts: Opts): SyncClient {
-  const f = opts.fetchFn ?? fetch;
-  let timer: number | undefined;
-  let running = false;
-
-  async function pushOnce(): Promise<void> {
-    const outbox = await db.outbox.toArray();
-    if (outbox.length === 0) return;
-    const ids = [...new Set(outbox.map((o) => o.id))];
-    const rows = (await db.notes.bulkGet(ids)).filter(Boolean) as NoteRow[];
-    const res = await f(`${opts.apiBase}/push`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ rows: rows.map(stripMeta) }),
-    });
-    if (!res.ok) throw new Error(`push ${res.status}`);
-    await db.transaction("rw", db.notes, db.outbox, async () => {
-      await db.outbox.bulkDelete(outbox.map((o) => o.seq!) as number[]);
-      for (const r of rows) {
-        const cur = await db.notes.get(r.id);
-        if (cur && cur._dirty === 1) await db.notes.put({ ...cur, _dirty: 0 });
-      }
-    });
-  }
-
-  async function pullOnce(): Promise<void> {
-    for (;;) {
-      const meta = await db.syncMeta.get(CURSOR_KEY);
-      const cursor = (meta?.value as string) ?? "";
-      const url = `${opts.apiBase}/pull?cursor=${encodeURIComponent(cursor)}&limit=500`;
-      const res = await f(url);
-      if (!res.ok) throw new Error(`pull ${res.status}`);
-      const page = await res.json();
-      await db.transaction("rw", db.notes, db.syncMeta, async () => {
-        for (const ch of page.changes as any[]) {
-          const local = await db.notes.get(ch.id);
-          if (local && local._dirty === 1) continue; // never clobber unsynced edits
-          await db.notes.put({ ...(ch as NoteRow), _dirty: 0 });
-        }
-        await db.syncMeta.put({ key: CURSOR_KEY, value: page.cursor });
-      });
-      if (!page.hasMore) break;
-    }
-  }
-
-  async function syncOnce(): Promise<void> {
-    if (typeof navigator !== "undefined" && navigator.onLine === false) {
-      setSyncStatus("offline"); return;
-    }
-    setSyncStatus("syncing");
-    try { await pushOnce(); await pullOnce(); setSyncStatus("idle"); }
-    catch { setSyncStatus("error"); }
-  }
-
-  function schedule() {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => { void syncOnce(); }, 1500) as unknown as number;
-  }
-
-  return {
-    syncOnce,
-    start() {
-      if (running) return;
-      running = true;
-      setLocalWriteListener(schedule);
-      if (typeof window !== "undefined") window.addEventListener("online", () => void syncOnce());
-      void syncOnce();
-    },
-    stop() { running = false; if (timer) clearTimeout(timer); },
-  };
-}
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cd webapp && npx vitest run src/sync/engine.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
+- [ ] **Step 4: Commit**
 ```bash
-git add webapp/src/sync
-git commit -m "feat(webapp): sync engine push/pull with dirty-aware apply"
+git add webapp/src/sync/engine.ts webapp/src/sync/status.ts webapp/src/sync/client.ts
+git commit -m "feat(webapp): port ember sync engine (task-only, cookie auth)"
 ```
 
 ---
 
-### Task 9: Wire the SPA together — Tasks screen + live sync
+### Task 11: Tasks screen + wire the sync client
 
 **Files:**
 - Create: `webapp/src/ui/TasksScreen.tsx`
 - Modify: `webapp/src/App.tsx`
 
-**Interfaces:**
-- Consumes: repo (`createNote`, `updateNote`, `deleteNote`, `liveNotes`), `createSyncClient`, `subscribeSyncStatus`/`getSyncStatus`.
-- Produces: a working screen (add via input, toggle title edit, delete) that reflects Dexie state and shows sync status; a module-level sync client `start()`ed once.
+**Interfaces:** consumes the task repo + `createSyncClient` + `useSyncStatus`. Minimal single screen: add via input, list today's tasks, complete, delete; sync-status text.
 
-- [ ] **Step 1: Implement the screen and app**
+- [ ] **Step 1: Implement** `TasksScreen.tsx` (input→`createTask`, list from `liveTodayTasks` on a 1s poll, `completeTask`/`deleteTask` buttons, `useSyncStatus()` badge) and `App.tsx` (create a module-level `createSyncClient({apiBase:"/api/sync", getToken: async()=>null})`, `start()` in a `useEffect`, render `<TasksScreen/>`).
 
-```tsx
-// webapp/src/ui/TasksScreen.tsx
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { createNote, deleteNote, liveNotes, type } from "../db/repo";
-import type { NoteRow } from "../db/db";
-import { getSyncStatus, subscribeSyncStatus } from "../sync/status";
-
-export function TasksScreen() {
-  const [notes, setNotes] = useState<NoteRow[]>([]);
-  const [title, setTitle] = useState("");
-  const status = useSyncExternalStore(subscribeSyncStatus, getSyncStatus);
-
-  async function refresh() { setNotes(await liveNotes()); }
-  useEffect(() => { void refresh(); const i = setInterval(refresh, 1000); return () => clearInterval(i); }, []);
-
-  async function add() {
-    if (!title.trim()) return;
-    await createNote({ title: title.trim() });
-    setTitle(""); void refresh();
-  }
-
-  return (
-    <div style={{ maxWidth: 520, margin: "2rem auto", fontFamily: "system-ui" }}>
-      <header style={{ display: "flex", justifyContent: "space-between" }}>
-        <h1>Tasks</h1><small>sync: {status}</small>
-      </header>
-      <div style={{ display: "flex", gap: 8 }}>
-        <input value={title} onChange={(e) => setTitle(e.target.value)}
-               onKeyDown={(e) => e.key === "Enter" && add()} placeholder="Add a task…" style={{ flex: 1 }} />
-        <button onClick={add}>Add</button>
-      </div>
-      <ul>
-        {notes.map((n) => (
-          <li key={n.id} style={{ display: "flex", justifyContent: "space-between" }}>
-            <span>{n.title}</span>
-            <button onClick={async () => { await deleteNote(n.id); void refresh(); }}>✕</button>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-```
-
-Note: remove the stray `type` import above — import only what exists:
-```tsx
-import { createNote, deleteNote, liveNotes } from "../db/repo";
-```
-
-```tsx
-// webapp/src/App.tsx
-import { useEffect } from "react";
-import { TasksScreen } from "./ui/TasksScreen";
-import { createSyncClient } from "./sync/engine";
-
-const sync = createSyncClient({ apiBase: "/api/sync" });
-
-export function App() {
-  useEffect(() => { sync.start(); return () => sync.stop(); }, []);
-  return <TasksScreen />;
-}
-```
-
-- [ ] **Step 2: Typecheck + build**
-
-Run: `cd webapp && npm run build`
-Expected: exit 0, `webapp/dist` produced.
+- [ ] **Step 2: Build** — `cd webapp && npm run build` → exit 0.
 
 - [ ] **Step 3: Commit**
-
 ```bash
-git add webapp/src/ui webapp/src/App.tsx
-git commit -m "feat(webapp): Tasks screen wired to repo + live sync"
+git add webapp/src/ui webapp/src/App.tsx && git commit -m "feat(webapp): Tasks screen wired to per-field sync"
 ```
 
 ---
 
-### Task 10: Serve the SPA from odysseus at `/app`
+### Task 12: Serve the SPA from odysseus at `/app`
 
-**Files:**
-- Modify: `app.py` (StaticFiles mount + two routes, in the static-serving area near line 480–496 and the page-route block near line 867+)
+**Files:** Modify `app.py` (mount `/app-assets` → `webapp/dist/assets`; `@app.get("/app")` + `@app.get("/app/{path:path}")` → `FileResponse(webapp/dist/index.html)`, guarded by `os.path.isdir`). Isolated prefix; no existing route affected.
 
-**Interfaces:**
-- Consumes: the built `webapp/dist`.
-- Produces: `GET /app` and `GET /app/{path:path}` serve `webapp/dist/index.html`; `/app-assets/*` serves hashed build assets. Isolated prefix — no existing route is affected.
+- [ ] **Step 1: Add mount + routes** (as in the file-structure notes; `from fastapi.responses import FileResponse` if not already imported).
 
-- [ ] **Step 1: Add the mount + routes**
-
-Near the existing `app.mount("/static", ...)` in `app.py`, add:
-
-```python
-WEBAPP_DIST = abs_join(BASE_DIR, "webapp/dist")
-if os.path.isdir(WEBAPP_DIST):
-    app.mount("/app-assets", StaticFiles(directory=abs_join(WEBAPP_DIST, "assets")), name="app-assets")
-```
-
-Near the explicit page routes (e.g. after `serve_index`), add:
-
-```python
-@app.get("/app")
-@app.get("/app/{path:path}")
-async def serve_webapp(request: Request, path: str = ""):
-    index = abs_join(WEBAPP_DIST, "index.html")
-    if os.path.exists(index):
-        return FileResponse(index)
-    raise HTTPException(404, "webapp not built (run: cd webapp && npm run build)")
-```
-
-(`FileResponse` is imported in `app.py`; if not, add `from fastapi.responses import FileResponse` at the top with the other response imports.)
-
-- [ ] **Step 2: Manual verification (documented, run locally)**
-
-```bash
-cd webapp && npm run build && cd ..
-docker compose up -d --build     # or restart the running app so it picks up webapp/dist
-```
-Then in a browser logged into odysseus:
-1. Open `https://chat.elsiga.ch/app` (or `http://localhost:7000/app`) → the Tasks screen loads, `sync: idle`.
-2. Add "Buy milk" → it appears; within ~2s `sync` flips `syncing`→`idle`.
-3. Open odysseus's existing Notes view → "Buy milk" is present (proves push hit the real `notes` table).
-4. In DevTools, go offline, add "Offline task", reload `/app` → it's still listed (IndexedDB), `sync: offline`.
-5. Go back online → it syncs and appears in Notes.
+- [ ] **Step 2: Manual end-to-end verification** — `cd webapp && npm run build && cd .. && docker compose up -d`. Logged into odysseus, open `/app`: add "Buy milk" → within ~2s status flips `syncing`→`idle`. Confirm the round trip two ways: (a) open `/app` in a second browser/profile → "Buy milk" appears after its initial pull; (b) DevTools → offline → add "Offline task" → reload `/app` (still listed from IndexedDB, status `offline`) → back online → it syncs. Verify per-field: in browser A change the title, in browser B (before it syncs) change the bucket → after both sync, both changes survive.
 
 - [ ] **Step 3: Commit**
-
 ```bash
-git add app.py
-git commit -m "feat(sync): serve local-first SPA at /app"
+git add app.py && git commit -m "feat(sync): serve local-first SPA at /app"
 ```
 
 ---
 
-### Task 11: PWA offline-shell verification
+### Task 13: PWA offline shell
 
-**Files:**
-- Modify: `webapp/vite.config.ts` (PWA manifest/caching already added in Task 6; confirm it precaches the shell)
+**Files:** Modify `webapp/vite.config.ts` — `VitePWA({ registerType:"autoUpdate", manifest:{name:"Odysseus Tasks", short_name:"Tasks", start_url:"/app", display:"standalone"}, workbox:{ navigateFallback:"/app-assets/index.html", globPatterns:["**/*.{js,css,html}"] } })`.
 
-**Interfaces:**
-- Produces: a service worker that precaches the app shell so `/app` cold-loads offline.
-
-- [ ] **Step 1: Confirm PWA config precaches the shell**
-
-Ensure `webapp/vite.config.ts` `VitePWA` includes:
-```ts
-VitePWA({
-  registerType: "autoUpdate",
-  manifest: { name: "Odysseus Tasks", short_name: "Tasks", start_url: "/app", display: "standalone" },
-  workbox: { navigateFallback: "/app-assets/index.html", globPatterns: ["**/*.{js,css,html}"] },
-})
-```
-
-- [ ] **Step 2: Manual verification**
-
-```bash
-cd webapp && npm run build && cd .. && docker compose up -d
-```
-In the browser: load `/app` once (registers SW), then DevTools → Application → Service Workers → check "Offline", reload → the shell still renders (from SW cache) and shows cached notes. Re-online → sync resumes.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add webapp/vite.config.ts
-git commit -m "feat(webapp): PWA offline app shell"
-```
+- [ ] **Step 1: Configure PWA** (above). **Step 2:** build + verify offline cold-load (DevTools → Application → Service Workers → Offline → reload `/app` renders from cache). **Step 3:** commit `style/feat(webapp): PWA offline app shell`.
 
 ---
 
-### Task 12: Adapt visual language to the odysseus prototype
+### Task 14: Adapt visual language to the odysseus prototype
 
-**Files:**
-- Modify: `webapp/src/ui/TasksScreen.tsx` (+ a small `webapp/src/ui/theme.css` if useful)
-- Reference (read-only): `design/Tasks + Calendar Prototype.dc.html`, `design/Screens.dc.html`
+**Files:** Modify `webapp/src/ui/TasksScreen.tsx` (+ optional `webapp/src/ui/theme.css`). Reference (read-only): `design/Tasks + Calendar Prototype.dc.html`, `design/Screens.dc.html`.
 
-**Interfaces:** no API change — visual only.
-
-- [ ] **Step 1: Extract the design tokens**
-
-Open `design/Tasks + Calendar Prototype.dc.html` and record: the font stack, the color variables (background, surface, text, accent), border-radius, and the task-row layout. Cross-check against odysseus's existing tokens in `static/` (e.g. CSS custom properties in `static/index.html`/`static/css`) so the SPA reads as part of odysseus.
-
-- [ ] **Step 2: Apply tokens to the Tasks screen**
-
-Replace the inline styles in `TasksScreen.tsx` with the prototype's tokens (font, colors, radius, spacing). Keep it a single screen — day/week/calendar views are Slice 2. Verify light/dark parity with odysseus if it themes.
-
-- [ ] **Step 3: Rebuild + eyeball against the prototype**
-
-```bash
-cd webapp && npm run build
-```
-Load `/app`, compare side-by-side with the prototype screenshot; adjust until it reads as native odysseus.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add webapp/src/ui
-git commit -m "style(webapp): match odysseus design language from prototype"
-```
+- [ ] **Step 1:** Extract design tokens (font, color vars, radius, task-row layout) from the prototype; cross-check odysseus's `static/` CSS custom properties so the SPA reads as native. **Step 2:** Apply tokens (keep a single screen; day/week/calendar are Slice 2); verify light/dark parity. **Step 3:** build + eyeball vs. prototype. **Step 4:** commit `style(webapp): match odysseus design language`.
 
 ---
 
 ## Self-Review
 
-**Spec coverage (against the program design doc §6 Slice 1 = "SPA + sync foundation + tasks offline, served by odysseus as a browser PWA, thinnest vertical proving the local-first ↔ odysseus loop"):**
-- SPA scaffold → Task 6. Local store → Task 7. Sync engine → Task 8. Tasks UI → Task 9. Served by odysseus → Task 10. Offline PWA → Task 11. odysseus sync endpoints over the `Note` domain → Tasks 1–5. Design integration → Task 12. ✅ All Slice 1 spec points map to a task.
-- Deferred by design (not gaps): `ody_` token auth (Android slice), calendar/Pomodoro (Slice 2), per-field/HLC sync (only if multi-device ever needs it).
+**Spec coverage** (program doc §6 Slice 1 = "SPA + sync foundation + tasks offline, per-field, served by odysseus"): sync-owned tables → T1; HLC/winners/registry/apply/pull (ember-faithful per-field) → T2–T5; endpoints → T6; SPA scaffold → T7; ported shared core → T8; ported store+writes → T9; ported engine → T10; Tasks UI → T11; served at `/app` → T12; PWA offline → T13; design → T14. ✅ All Slice 1 points covered. Deferred by design: `ody_` token auth (Android slice), subtask/session/project entities + Pomodoro (Slice 2), agent access to `sync_task` (later additive tool).
 
-**Placeholder scan:** No "TBD/TODO/handle edge cases"; every code step carries real code and a real command. One deliberate correction is called out inline in Task 9 (remove the stray `type` import) — kept visible rather than hidden so the implementer doesn't copy the wrong line.
+**Placeholder scan:** Backend steps carry complete Python + real pytest commands. Client "port" tasks name exact ember source paths + the precise reductions (task-only entity set, cookie auth, `/api/sync` base) and include verification tests — actionable, not vague. No "TBD/handle edge cases".
 
-**Type consistency:** `NoteRow`/`OutboxRow` defined in `db.ts` (Task 7) and consumed unchanged in `repo.ts`, `engine.ts` (Task 8), `TasksScreen.tsx` (Task 9). Backend `note_to_sync_dict` keys (Task 2) match the `NoteRow` fields the client applies (Task 8) — `id,title,content,items,note_type,color,label,pinned,archived,due_date,sort_order,repeat,deleted,updated_at`. `createSyncClient({apiBase, fetchFn})` signature is identical in engine and its tests and App.tsx.
+**Type/contract consistency:** wire shapes match ember exactly on both sides — push `{deviceId, patches:[{entity,entityId,fields:{f:{v,ts}}}]}` (client `engine.ts` ↔ server `apply_push`), pull `{changes:[{seq,entity,entityId,fields}], cursor, hasMore}` (server `pull_changes` ↔ client apply). Field names are ember camelCase throughout, mirrored by `sync_task` columns and `synced_fields`. `compare_hlc`/`compareHlc` use identical strict-`<` semantics on both sides. `createSyncClient` signature identical in engine, tests, and `App.tsx`.
 
-**Known risk carried forward (documented, not a Slice 1 blocker):** the LWW model is client-authoritative on push + dirty-aware on pull — correct for single-user. Cross-device same-record concurrent edits resolve last-sync-wins; revisit only if multi-device per-field merge is ever needed (would adopt ember's HLC/change_log then).
+**Carried risk:** cursor-0 snapshot stamps agent-free rows via `updatedAt` fallback ts — correct here because `sync_task` has no non-sync writers (the whole point of sync-owned tables). If a future slice lets the agent write `sync_task` directly, it must go through `apply_push` (or journal to `sync_change_log`) to preserve per-field semantics — noted for that slice.
 
 ---
 
@@ -1276,7 +970,7 @@ git commit -m "style(webapp): match odysseus design language from prototype"
 
 Plan complete and saved to `docs/superpowers/plans/2026-07-21-slice1-spa-sync-foundation.md`. Two execution options:
 
-1. **Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration.
-2. **Inline Execution** — Execute tasks in this session using executing-plans, batch execution with checkpoints.
+1. **Subagent-Driven (recommended)** — a fresh subagent per task, reviewed between tasks.
+2. **Inline Execution** — tasks executed in this session in batches with checkpoints.
 
 Which approach?
