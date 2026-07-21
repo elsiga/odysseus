@@ -105,3 +105,7 @@ compound.config.json
 *.error.log
 _scratch/
 /odysseus/
+
+# New SPA (webapp/) build + deps
+webapp/node_modules/
+webapp/dist/
