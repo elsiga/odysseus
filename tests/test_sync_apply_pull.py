@@ -81,3 +81,20 @@ def test_apply_owner_gate(tmp_path):
     apply_push(db, "alice", "dev1", [_patch("t1", title=("mine", TS1))])
     with pytest.raises(PermissionError):
         apply_push(db, "bob", "dev1", [_patch("t1", title=("steal", TS2))])
+
+
+def test_apply_rollback_on_failure(tmp_path):
+    """Verify that if a second patch fails, the first patch is rolled back."""
+    _, Session = _db(tmp_path)
+    db = Session()
+
+    # Try to apply two patches: first valid, second with unknown field
+    with pytest.raises(ValueError):
+        apply_push(db, "alice", "dev1", [
+            _patch("t1", title=("A", TS1)),
+            {"entity": "task", "entityId": "t2", "fields": {"nope": {"v": 1, "ts": TS1}}}
+        ])
+
+    # Verify t1 was not persisted (rolled back)
+    row = db.query(m.SyncTask).get("t1")
+    assert row is None, "Patch 1 should have been rolled back due to patch 2 failure"
