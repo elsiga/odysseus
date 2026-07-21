@@ -1,1 +1,2 @@
-export const SYNC_ENGINE_VERSION = '0.1.0'
+export { notesRepo } from './notesRepo'
+export { createSyncClient } from './engine'
