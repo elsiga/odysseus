@@ -8,6 +8,7 @@ from src.sync.registry import synced_fields, validate_field_value
 from src.sync.winners import winners_from_rows
 from src.sync.models import SyncChangeLog
 from src.sync.apply import apply_push
+from src.sync.pull import pull_changes
 
 
 def _db(tmp_path):
@@ -98,3 +99,21 @@ def test_apply_rollback_on_failure(tmp_path):
     # Verify t1 was not persisted (rolled back)
     row = db.query(m.SyncTask).get("t1")
     assert row is None, "Patch 1 should have been rolled back due to patch 2 failure"
+
+
+def test_pull_bootstrap_then_incremental(tmp_path):
+    _, Session = _db(tmp_path)
+    db = Session()
+    apply_push(db, "alice", "dev1", [_patch("t1", title=("A", TS1))])
+
+    boot = pull_changes(db, "alice", 0, 500)
+    assert len(boot["changes"]) == 1
+    assert boot["changes"][0]["entityId"] == "t1"
+    assert boot["changes"][0]["fields"]["title"]["v"] == "A"
+    assert boot["hasMore"] is False
+    cursor = boot["cursor"]
+
+    apply_push(db, "alice", "dev1", [_patch("t1", title=("B", TS2))])
+    inc = pull_changes(db, "alice", cursor, 500)
+    assert [c["fields"]["title"]["v"] for c in inc["changes"]] == ["B"]
+    assert inc["cursor"] > cursor
