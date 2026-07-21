@@ -2,7 +2,6 @@
 """Google Keep-style notes / checklists API."""
 
 import json
-import uuid
 import logging
 from typing import Dict, Any, Optional
 
@@ -14,7 +13,6 @@ from core.middleware import INTERNAL_TOOL_USER
 from src.auth_helpers import require_user
 from src.constants import DATA_DIR
 from src.upload_handler import reserve_upload_references
-from sqlalchemy.orm.attributes import flag_modified
 from routes.note.note_service import (
     create_note_record, update_note_record, delete_note_record, toggle_item_record,
 )
@@ -690,12 +688,17 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
     @router.put("/{note_id}")
     def update_note(request: Request, note_id: str, body: NoteUpdate):
         user = _owner(request)
-        _reserve_note_uploads(
-            user, body.image_url, body.color, body.content,
-            json.dumps(body.items) if body.items is not None else None,
-        )
         db = SessionLocal()
         try:
+            # Preserve original ordering: existence/ownership 404 BEFORE the
+            # upload-reservation 409 check.
+            note = db.query(Note).filter(Note.id == note_id).first()
+            if note is None or (user is not None and note.owner != user):
+                raise HTTPException(404, "Note not found")
+            _reserve_note_uploads(
+                user, body.image_url, body.color, body.content,
+                json.dumps(body.items) if body.items is not None else None,
+            )
             data = body.model_dump(exclude_unset=True)
             note = update_note_record(db, user, note_id, data)
             return _note_to_dict(note)
