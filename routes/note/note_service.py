@@ -82,3 +82,34 @@ def toggle_item_record(db, owner, note_id: str, index: int) -> list:
     note.rev = (note.rev or 1) + 1
     db.commit()
     return items
+
+
+_WIRE_IN_FIELDS = ("title", "content", "items", "note_type", "color", "label",
+                   "pinned", "archived", "due_date", "image_url", "repeat",
+                   "sort_order", "source", "session_id", "agent_session_id")
+
+
+def note_from_wire(record: dict) -> dict:
+    """Client record → service `data` dict (writable fields only; items stays a list)."""
+    return {k: record[k] for k in _WIRE_IN_FIELDS if k in record}
+
+
+def note_to_wire(note: Note) -> dict:
+    """Note → wire record (mirrors _note_to_dict; items decoded to a list)."""
+    items = None
+    if note.items:
+        try:
+            items = json.loads(note.items)
+        except (json.JSONDecodeError, TypeError):
+            items = None
+    return {
+        "id": note.id, "owner": note.owner, "title": note.title, "content": note.content,
+        "items": items, "note_type": note.note_type, "color": note.color, "label": note.label,
+        "pinned": note.pinned, "archived": note.archived, "due_date": note.due_date,
+        "source": note.source, "session_id": note.session_id, "sort_order": note.sort_order or 0,
+        "image_url": note.image_url, "repeat": note.repeat or "none",
+        "agent_session_id": getattr(note, "agent_session_id", None),
+        "rev": note.rev,
+        "created_at": note.created_at.isoformat() if note.created_at else None,
+        "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+    }

@@ -1,22 +1,16 @@
-from src.sync.models import SyncTask
-
-_EXCLUDED = {"id", "owner", "updatedAt"}
-
-
-def _columns(model) -> list[str]:
-    return [c.name for c in model.__table__.columns if c.name not in _EXCLUDED]
-
+from core.database import Note
+from routes.note.note_service import (
+    note_to_wire, note_from_wire,
+    create_note_record, update_note_record, delete_note_record,
+)
 
 REGISTRY = {
-    "task": {"model": SyncTask, "fields": _columns(SyncTask)},
+    "note": {
+        "model": Note,
+        "to_wire": note_to_wire,
+        "from_wire": note_from_wire,
+        "create": create_note_record,   # (db, owner, data) -> Note
+        "update": update_note_record,    # (db, owner, id, data) -> Note
+        "delete": delete_note_record,    # (db, owner, id) -> None
+    },
 }
-
-
-def synced_fields(kind: str) -> list[str]:
-    return REGISTRY[kind]["fields"]
-
-
-def validate_field_value(kind: str, field: str, value) -> bool:
-    if field not in synced_fields(kind):
-        return False
-    return isinstance(value, (str, int, float, bool)) or value is None
