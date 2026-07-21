@@ -97,6 +97,9 @@ dev-docs/
 # Windows-port working docs (local only, not for public repo)
 docs/windows-port/
 
+# Local infra overrides (personal deployment; not for the fork / upstream)
+docker-compose.override.yml
+
 # Local config
 compound.config.json
 *.error.log

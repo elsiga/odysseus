@@ -92,13 +92,21 @@ Capacitor.**
 
 ## 6. Slice decomposition (each gets its own spec → plan → build)
 
-1. **Mobile shell** — Capacitor-wrap the odysseus frontend, point at the tunnel URL, token
-   auth, install on phone. Vendor ember's Capacitor notification plugin (for later use).
-   Unblocks everything; fastest path to the full workflow on-device.
-2. **Task / Pomodoro / calendar layer** (the bulk; lands in web + mobile) — extend
+1. **Mobile shell** — Capacitor app loading the live site (`server.url = https://chat.elsiga.ch`)
+   over the Cloudflare Tunnel; cookie + TOTP auth as in the browser. Ships the full odysseus
+   workflow (email, docs, chat, research) to the phone. **Online-only** — Capacitor's
+   `server.url` is all-or-nothing, so this slice has no offline behaviour. Unblocks phone
+   access fastest.
+2. **Offline-capable task / Pomodoro / calendar layer** (the bulk) — a **local-first module
+   bundled in the app** (not part of the remote webview): stores locally so tasks/calendar/
+   Pomodoro work offline, and **syncs to odysseus when back online**. Extends
    `Note` / `ScheduledTask` / `CalendarEvent` + native agent tools (new files, one-line
-   hooks); port ember's focus-timer, todo UX, quick-add, and task→calendar scheduling into
-   `static/js/`; wire native notifications.
+   hooks); ports ember's focus-timer, quick-add, todo UX, and — crucially — its local-first
+   sync engine. Needs its own brainstorm: odysseus's endpoints are plain CRUD, so the
+   offline→sync reconcile (local store + pull/push, LWW on timestamps) is real engineering.
+   Architecture note: because the shell is a remote webview, this module lands as bundled
+   local assets / native screens, so the "shared with web `static/js/`" assumption is
+   revisited here.
 3. **Reminder untangling** — collapse the three overlapping reminder mechanisms so
    DeepSeek-class models stop fumbling calendar ops; upstream the generic parts.
 4. **Honcho user-model brain** — backend integration into odysseus's memory layer.
@@ -109,15 +117,19 @@ Capacitor.**
   via the existing `_migrate_add_*` pattern; a conflict-prone hot file.
 - **Reminder overlap** already confuses the agent — Slice 3 must not be skipped.
 - **Vanilla-JS vs React island** for the task UI — decide in Slice 2; affects reuse effort.
-- **Offline behavior**: user accepts sync-when-connected; full local-first (ember's CRDT
-  engine) is *not* in scope initially — revisit only if needed.
+- **Offline behavior**: offline is **required for the task/calendar/Pomodoro layer** (Slice
+  2) via a bundled local-first module that syncs to odysseus when online — reusing ember's
+  sync engine. The rest of the odysseus workflow (email, docs, chat) stays online-only
+  (remote webview). Building offline→sync against odysseus's CRUD endpoints is the main
+  Slice 2 risk and gets its own brainstorm.
 - **Cloudflare edge TLS termination** — accepted trade-off vs. the convenience of a public
   URL for laptop + phone.
 
 ## 8. Out of scope / YAGNI (initially)
 
 - Rewriting the odysseus backend in TypeScript.
-- Full local-first offline CRDT sync.
+- Offline for the *rest* of the odysseus workflow (email, docs, chat) — those stay
+  online-only. (Offline for tasks/calendar/Pomodoro is now IN scope; see Slice 2.)
 - Google Calendar API integration (odysseus's CalDAV already covers the need).
 - MCP-based calendar/task tooling (native tools are preferred).
 - Cloudflare Access outer auth layer (odysseus auth + TOTP deemed sufficient).
