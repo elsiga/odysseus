@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { TaskRow } from '../db/db'
 import { createTask, completeTask, deleteTask, liveTodayTasks } from '../db/repo/tasks'
 import { useSyncStatus } from '../sync/status'
+import './theme.css'
 
 const POLL_MS = 1000
 
@@ -32,10 +33,14 @@ export default function TasksScreen() {
   }
 
   return (
-    <div>
-      <h1>Odysseus Tasks</h1>
-      <p>Sync: {syncStatus}</p>
-      <div>
+    <div className="tasks-screen">
+      <h1 className="tasks-screen__title">Odysseus Tasks</h1>
+      <span className="tasks-screen__sync">
+        <span className={`tasks-screen__sync-dot tasks-screen__sync-dot--${syncStatus}`} />
+        sync: {syncStatus}
+      </span>
+
+      <div className="tasks-screen__composer">
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
@@ -43,18 +48,47 @@ export default function TasksScreen() {
             if (e.key === 'Enter') void handleAdd()
           }}
           placeholder="Add a task…"
+          aria-label="New task title"
         />
-        <button onClick={() => void handleAdd()}>Add</button>
+        <button
+          className="tasks-screen__add-btn"
+          onClick={() => void handleAdd()}
+          disabled={!title.trim()}
+        >
+          Add
+        </button>
       </div>
-      <ul>
-        {tasks.map((task) => (
-          <li key={task.id}>
-            <span style={task.completedAt ? { textDecoration: 'line-through' } : undefined}>{task.title}</span>{' '}
-            {!task.completedAt && <button onClick={() => void completeTask(task.id)}>Complete</button>}{' '}
-            <button onClick={() => void deleteTask(task.id)}>Delete</button>
-          </li>
-        ))}
-      </ul>
+
+      {tasks.length === 0 ? (
+        <p className="tasks-screen__empty">Today is clear.</p>
+      ) : (
+        <ul className="tasks-screen__list">
+          {tasks.map((task) => {
+            const done = Boolean(task.completedAt)
+            return (
+              <li key={task.id} className="task-row">
+                <button
+                  className={`task-row__check${done ? ' task-row__check--done' : ''}`}
+                  onClick={() => void completeTask(task.id)}
+                  disabled={done}
+                  aria-label={done ? `${task.title} completed` : `Complete ${task.title}`}
+                  aria-pressed={done}
+                />
+                <span className={`task-row__title${done ? ' task-row__title--done' : ''}`}>
+                  {task.title}
+                </span>
+                <button
+                  className="task-row__delete"
+                  onClick={() => void deleteTask(task.id)}
+                  aria-label={`Delete ${task.title}`}
+                >
+                  ×
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      )}
     </div>
   )
 }
