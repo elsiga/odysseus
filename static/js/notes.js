@@ -12,6 +12,7 @@ import { snapModalToZone } from './tileManager.js';
 import { applyEdgeDock, clearDockSide } from './modalSnap.js';
 import { topToolWindowZ, topPortalZ } from './toolWindowZOrder.js';
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
+import { notesRepo, createSyncClient } from './productivity/sync-core.js';
 
 const API_BASE = window.location.origin;
 let _open = false;
@@ -419,13 +420,9 @@ function _undoArchive(note, prevIdx) {
 async function _fetchNotes() {
   _loading = true;
   try {
-    const url = `${API_BASE}/api/notes${_showingArchived ? '?archived=true' : ''}`;
-    const res = await fetch(url, { credentials: 'same-origin' });
-    if (!res.ok) { _notes = []; return; }
-    const data = await res.json();
-    _notes = data.notes || data || [];
+    _notes = await notesRepo.list();
   } catch (e) {
-    console.error('Failed to fetch notes:', e);
+    console.error('Failed to load notes:', e);
     _notes = [];
   } finally {
     _loading = false;
@@ -433,41 +430,19 @@ async function _fetchNotes() {
 }
 
 async function _saveNote(note) {
-  const method = note.id ? 'PUT' : 'POST';
-  const url = note.id ? `${API_BASE}/api/notes/${note.id}` : `${API_BASE}/api/notes`;
-  const res = await fetch(url, {
-    method, credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(note),
-  });
-  if (!res.ok) throw new Error('Failed to save note');
-  return await res.json();
+  return note.id ? await notesRepo.update(note.id, note) : await notesRepo.create(note);
 }
 
 async function _deleteNoteApi(id) {
-  // v2 review — used to swallow 4xx/5xx silently. Throw so callers can
-  // distinguish success vs failure and toast accordingly.
-  const r = await fetch(`${API_BASE}/api/notes/${id}`, { method: 'DELETE', credentials: 'same-origin' });
-  if (!r.ok) throw new Error('HTTP ' + r.status);
+  await notesRepo.remove(id);
 }
 
 async function _patchNote(id, patch) {
-  const res = await fetch(`${API_BASE}/api/notes/${id}`, {
-    method: 'PUT', credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
-  });
-  if (!res.ok) throw new Error('Failed to update note');
-  return await res.json();
+  return await notesRepo.update(id, patch);
 }
 
 async function _reorderNotesApi(ids) {
-  const res = await fetch(`${API_BASE}/api/notes/reorder`, {
-    method: 'POST', credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids }),
-  });
-  if (!res.ok) throw new Error('Failed to reorder notes');
+  await notesRepo.reorder(ids);
 }
 
 // ---- Helpers ----
@@ -1725,7 +1700,10 @@ function _renderNotes() {
   const prevPositions = _captureCardPositions();
   const activeReminderHighlights = _loadActiveHighlights();
 
-  let filtered = _activeLabel ? _notes.filter(n => _noteTags(n).includes(_activeLabel)) : _notes;
+  // notesRepo.list() returns ALL notes (archived + active) — the server
+  // used to pre-filter via `?archived=true`; now the split happens here.
+  let filtered = _notes.filter(n => (_showingArchived ? !!n.archived : !n.archived));
+  if (_activeLabel) filtered = filtered.filter(n => _noteTags(n).includes(_activeLabel));
   if (_activeFilter === 'reminders') {
     filtered = filtered.filter(n => n.due_date && _hasTimeComponent(n.due_date));
   } else if (_activeFilter === 'no-reminders') {
@@ -5311,12 +5289,8 @@ async function _commitNoteReorder() {
 // Background reminder loop — runs whether panel is open or not
 async function _initReminders() {
   try {
-    const res = await fetch(`${API_BASE}/api/notes`, { credentials: 'same-origin' });
-    if (res.ok) {
-      const data = await res.json();
-      _notes = data.notes || data || [];
-      _startReminderLoop();
-    }
+    _notes = await notesRepo.list();
+    _startReminderLoop();
   } catch {}
 }
 
@@ -5374,4 +5348,13 @@ window.notesModule = notesModule;
 // Start reminder loop on module load (after a short delay so app loads first)
 if (typeof window !== 'undefined') {
   setTimeout(_initReminders, 3000);
+
+  // Boot the local-first sync client (push outbox, pull remote changes)
+  // and refresh the local store + re-render whenever it (or our own
+  // local writes) change the notes table.
+  const _syncClient = createSyncClient({ apiBase: '/api/sync' });
+  _syncClient.start();
+  notesRepo.subscribe(() => {
+    _fetchNotes().then(() => { if (_open) _renderNotes(); });
+  });
 }
