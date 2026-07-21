@@ -1,5 +1,16 @@
+import { useEffect } from 'react'
+import { createSyncClient } from './sync/engine'
+import TasksScreen from './ui/TasksScreen'
+
+const syncClient = createSyncClient({ apiBase: '/api/sync', getToken: async () => null })
+
 function App() {
-  return <h1>Odysseus Tasks</h1>;
+  useEffect(() => {
+    syncClient.start()
+    return () => syncClient.stop()
+  }, [])
+
+  return <TasksScreen />
 }
 
-export default App;
+export default App
