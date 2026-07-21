@@ -4,23 +4,25 @@ import { VitePWA } from "vite-plugin-pwa";
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  base: "/app-assets/",
+  base: "/app/",
   plugins: [
     react(),
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: [],
+      scope: "/app/",
       manifest: {
         name: "Odysseus Tasks",
         short_name: "Tasks",
-        start_url: "/app",
+        start_url: "/app/",
+        scope: "/app/",
         display: "standalone",
         background_color: "#ffffff",
         theme_color: "#ffffff",
         icons: [],
       },
       workbox: {
-        navigateFallback: "/app-assets/index.html",
+        navigateFallback: "/app/index.html",
         globPatterns: ["**/*.{js,css,html}"],
       },
     }),

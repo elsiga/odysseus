@@ -79,6 +79,7 @@ import bcrypt as _bcrypt
 from src.app_helpers import abs_join, serve_html_with_nonce
 from src.generated_images import GENERATED_IMAGE_HEADERS, resolve_generated_image_path
 from starlette.responses import RedirectResponse
+from starlette.exceptions import HTTPException as _StarletteHTTPException
 
 # ========= LOGGING =========
 import logging.handlers
@@ -498,13 +499,41 @@ app.mount("/static", _RevalidatingStatic(directory=STATIC_DIR), name="static")
 # ========= LOCAL-FIRST SPA (webapp/dist) =========
 # Isolated prefix, guarded so a missing/unbuilt dist dir never breaks import.
 # `webapp/dist` is built via `cd webapp && npm run build` (gitignored output).
-# Vite's `base: "/app-assets/"` means index.html references JS/CSS chunks at
-# /app-assets/assets/<file> *and* root-level PWA files (manifest.webmanifest,
-# registerSW.js, sw.js) at /app-assets/<file> — so the whole dist dir (not
-# just dist/assets) must be mounted at /app-assets for those URLs to resolve.
+# Vite's `base: "/app/"` means index.html references JS/CSS chunks at
+# /app/assets/<file> *and* root-level PWA files (manifest.webmanifest,
+# registerSW.js, sw.js) at /app/<file> — so the whole dist dir (not just
+# dist/assets) is mounted at /app for those URLs to resolve.
+#
+# Serving everything (shell + assets + sw.js) under one prefix, /app, is
+# what makes the service worker's scope work: registerSW.js registers
+# /app/sw.js with scope "/app/" (see vite.config.ts), and a SW's scope can
+# never exceed the directory it's served from. Mounting the dist dir at
+# /app-assets while serving the shell at /app (the old scheme) meant sw.js
+# could only ever get scope /app-assets/ — outside that scope, the browser
+# never even consults the SW, so a cold-load of /app while offline could
+# not be served from cache. Collapsing both onto /app fixes that: the SW's
+# maximum legal scope (/app/) now covers exactly the route users navigate
+# to, without widening it to "/" and intercepting odysseus's other routes
+# (/, /tasks, /notes, ...).
+#
+# _SpaStatic falls back to index.html on a 404 so client-side routes under
+# /app/* (e.g. /app/some-client-route) still resolve to the SPA shell,
+# rather than 404ing, mirroring the old serve_webapp_spa_fallback behavior.
+class _SpaStatic(StaticFiles):
+    async def get_response(self, path, scope):
+        try:
+            return await super().get_response(path, scope)
+        except _StarletteHTTPException as exc:
+            # StaticFiles.get_response raises starlette's base HTTPException
+            # (not fastapi's subclass) on a 404 — catch the base class here.
+            if exc.status_code != 404:
+                raise
+            return await super().get_response("index.html", scope)
+
+
 WEBAPP_DIST = os.path.join(BASE_DIR, "webapp", "dist")
 if os.path.isdir(WEBAPP_DIST):
-    app.mount("/app-assets", StaticFiles(directory=WEBAPP_DIST), name="app-assets")
+    app.mount("/app", _SpaStatic(directory=WEBAPP_DIST, html=True), name="app")
 
 # ========= GENERATED IMAGES =========
 @app.get("/api/generated-image/{filename}")
@@ -927,19 +956,9 @@ async def serve_tasks(request: Request):
 async def serve_library(request: Request):
     return await serve_index(request)
 
-# Local-first SPA shell (webapp/dist) — isolated prefix, no auth/nonce
-# wrapping (it's a static built bundle, not a bundled-template route). 404s
-# cleanly if the SPA hasn't been built, instead of erroring at import time.
-@app.get("/app")
-async def serve_webapp_spa(request: Request):
-    index_path = os.path.join(WEBAPP_DIST, "index.html")
-    if not os.path.isfile(index_path):
-        raise HTTPException(status_code=404, detail="SPA not built")
-    return FileResponse(index_path)
-
-@app.get("/app/{path:path}")
-async def serve_webapp_spa_fallback(request: Request, path: str):
-    return await serve_webapp_spa(request)
+# Local-first SPA shell (webapp/dist) is now served entirely by the
+# `/app` StaticFiles mount above (_SpaStatic), so the service worker's
+# scope covers exactly `/app/`. See the mount's comment for why.
 
 @app.get("/backgrounds")
 async def serve_backgrounds(request: Request):
