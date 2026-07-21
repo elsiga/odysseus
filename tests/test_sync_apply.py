@@ -57,3 +57,18 @@ def test_foreign_owner_rejected(tmp_path):
         assert False, "expected PermissionError"
     except PermissionError:
         pass
+
+
+def test_delete_wins_over_later_upsert_no_resurrection(tmp_path):
+    s = _s(tmp_path)
+    nid = str(uuid.uuid4())
+    apply_push(s, "alice", [{"entity": "note", "id": nid, "op": "upsert",
+        "editedAt": "2026-07-21T10:00:00", "record": {"title": "x"}}])
+    apply_push(s, "alice", [{"entity": "note", "id": nid, "op": "delete",
+        "editedAt": "2026-07-21T10:01:00"}])
+    # A stale offline device pushes an upsert (even with a LATER editedAt) to the
+    # deleted id — spec §4: delete wins, must NOT resurrect.
+    r = apply_push(s, "alice", [{"entity": "note", "id": nid, "op": "upsert",
+        "editedAt": "2026-07-21T10:02:00", "record": {"title": "resurrected"}}])
+    assert r["results"][0]["op"] == "delete"
+    assert s.query(db.Note).filter(db.Note.id == nid).first() is None

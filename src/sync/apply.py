@@ -36,6 +36,16 @@ def apply_push(db, owner: str, changes: list) -> dict:
         data = spec["from_wire"](ch.get("record") or {})
         data["edited_at"] = edited_at
         if row is None:
+            # Delete wins (spec §4): if this id was tombstoned, a stale offline
+            # upsert must NOT resurrect it — drop and return a delete tombstone.
+            last = (db.query(SyncChangeLog)
+                      .filter(SyncChangeLog.owner == owner,
+                              SyncChangeLog.entity == entity,
+                              SyncChangeLog.entity_id == eid)
+                      .order_by(SyncChangeLog.seq.desc()).first())
+            if last is not None and last.op == "delete":
+                results.append({"entity": entity, "id": eid, "op": "delete", "rev": None, "record": None})
+                continue
             data["id"] = eid
             new = spec["create"](db, owner, data)
             results.append({"entity": entity, "id": eid, "op": "upsert",
