@@ -16,7 +16,8 @@ Make odysseus's **own** productivity domains — **Notes/todos** first, then **C
   - **"Notes"** = *the real todo/checklist domain* (Google-Keep-style: notes + checklists with inline JSON `items:[{text,done}]`, reminders, labels, pinning, colors). Table `notes`, owner-scoped, **online-only** today. Routes `/api/notes*`, module `static/js/notes.js`.
   - **"Calendar"** = a real calendar with **CalDAV two-way (server↔server) sync**. Tables `calendars`/`calendar_events`/`caldav_deleted_events`, **online-only** on the client. Routes `/api/calendar*`, module `static/js/calendar.js`.
 - **Nothing in odysseus is offline/local-first today** (the only `localStorage` use is a Notes view-mode preference; CalDAV is server↔server, not device-offline).
-- **Native tables lack delta-tracking:** `Note` has no reliable `updated_at`; `CalendarEvent` has none. SQLAlchemy event listeners are **already used** in `core/database.py`, so change-capture has an idiomatic home.
+- **Native tables lack version/change tracking:** `Note` *does* have `updated_at` (via `TimestampMixin`, `onupdate`) but **no `rev`/version column** and no change-log; `CalendarEvent` has neither. The SQLAlchemy `event` API is imported in `core/database.py` but only for a `connect`-time `PRAGMA foreign_keys` listener — **there are no mapper-level `after_insert/update/delete` listeners today.** Adding them is net-new (standard SQLAlchemy), not reuse of an existing pattern; the additive-column and `event`-import precedents lower the friction.
+- **`Note.id` is an app-side `str(uuid.uuid4())` (string UUID PK), not a server int autoincrement.** This is the key enabler for offline creates: a device mints the note's UUID locally and pushes it verbatim — **no temp-ID→server-ID remapping layer is ever needed**. (Contrast: an int-autoincrement PK would have forced an ID-allocation/remap protocol.)
 - **Single-user, self-hosted** — this justifies per-record LWW over CRDT/OT.
 
 ## 3. Architecture
@@ -24,14 +25,14 @@ Make odysseus's **own** productivity domains — **Notes/todos** first, then **C
 Four units, each with one job and a clean interface.
 
 ### 3.1 Backend — generic entity-sync over odysseus's native tables
-- **One new sync-infra table `sync_change_log`** (not a domain table): append-only `(seq, owner, entity, entity_id, op, rev)` recording *what changed*, populated by **SQLAlchemy `after_insert/after_update/after_delete` listeners** on the synced models (`Note` first, `CalendarEvent` later). Listeners catch **every** write path — web UI, agents, CalDAV write-back.
-- **Additive columns** on native tables via the existing `_migrate_add_*` pattern: `updated_at` (server-stamped, `onupdate`) + a monotonic `rev` for LWW/change-detection.
+- **One new sync-infra table `sync_change_log`** (not a domain table): append-only `(seq, owner, entity, entity_id, op, rev)` recording *what changed*, populated by **net-new SQLAlchemy `after_insert/after_update/after_delete` mapper listeners** on the synced models (`Note` first, `CalendarEvent` later). These do not exist today (only a `connect`-PRAGMA listener does) — they are added now. Listeners catch **every** write path — web UI, agents, CalDAV write-back. **Because the sync push itself routes through the ORM CRUD (below), the listener also fires on sync writes → the originating device pulls its own change back (echo); the client dedups by `rev` and must never let an echo clobber a newer local edit** (a named test case; Slice 1 logged the same "equal-ts own-echo" concern).
+- **Additive column** on `notes` via the existing `_migrate_add_*` pattern: a monotonic **`rev`** for optimistic-concurrency/change-detection. (`updated_at` already exists via `TimestampMixin`; its stamping semantics change — see §4.)
 - **Endpoints** (generalize Slice 1's `/api/sync`):
   - `GET /api/sync/pull?cursor=&limit=` → changed records since cursor across registered entities, each `{entity, id, op, record|null, rev}`; cursor + `hasMore`.
-  - `POST /api/sync/push` → apply client edits with **per-record LWW**, **routed through the domain service functions** (the same code `/api/notes` / `/api/calendar` use) so reminders, AI-classification, and CalDAV write-back still fire. Returns the winning records.
+  - `POST /api/sync/push` → apply client edits with **per-record LWW**, **routed through the domain CRUD** (the same logic `/api/notes` uses) so reminders, AI-classification, and CalDAV write-back still fire. The push carries each edit's **`editedAt` client timestamp** (see §4). Returns the winning records.
   - `GET /api/sync/ping`.
   - A generalized `REGISTRY` maps `note`/`calendar_event` → model + wire mapping + service hooks. Owner-scoped throughout (`require_user` + single-user `FALLBACK_OWNER`, mirroring `calendar_routes`).
-- **Correctness principle:** the sync push is not a blind row overwrite — it invokes the domain's create/update/delete service logic (extract those from the route handlers if needed) so there is **one source of truth for domain writes**.
+- **Correctness principle — one source of truth for domain writes.** ⚠️ **This is Slice A's largest single task, not a caveat.** odysseus has **no service layer today**: all note CRUD is inline inside route-factory closures in `routes/note/note_routes.py` (`create_note`/`update_note`/`delete_note`), each opening its own `SessionLocal()`, closed over `upload_handler`/`task_scheduler`, taking `Request`/pydantic bodies — none of it callable without going through HTTP. So **the prerequisite, gated before the push endpoint, is a behavior-preserving extraction of note create/update/delete into plain callable service functions**, which both the existing routes and the sync push then call. Re-implementing row mutation inside the sync push instead is rejected — it would fork domain logic and drift.
 
 ### 3.2 Client — headless bundled local-first layer
 - Lives at `static/js/productivity/` as a **dev-time-built, committed JS bundle** (Option A): keep the tested TS sync engine + Dexie; a bundler (run only when the engine changes, on the Node box) emits a self-contained ES module; **odysseus's runtime stays build-less**.
@@ -60,8 +61,9 @@ The domain data stays in odysseus's real tables; only `sync_change_log` + the cl
 
 ## 4. Conflict model — per-record LWW + tombstones
 
-- **Per-record last-write-wins.** Two distinct roles: **`rev`** (a per-record integer version, bumped on every write) is the *optimistic-concurrency check* — "did the server move since the client's base?"; **`updated_at`** (server-stamped) is the *tie-break* — the later timestamp wins. No per-field HLC, no CRDT/OT — single-user; matches the design doc's "per-record LWW, escalate only if it bites." (Distinct from `sync_change_log.seq`, which is the global pull cursor, not a per-record version.)
-- **Push reconcile:** a client edit carries the record's base `rev`. If the server's current `rev` still equals that base → apply, bump `rev`. If the server moved on (its `rev` is higher) → **the record with the later `updated_at` wins the whole record**; server returns the winner so the client converges.
+- **Per-record last-write-wins, tie-broken by _edit time_.** Two distinct roles: **`rev`** (a per-record integer version, bumped on every write) is the *optimistic-concurrency check* — "did the server move since the client's base?"; **`editedAt`** (a **client-stamped** wall-clock time carried in the push, persisted into the record's `updated_at`) is the *tie-break* — **the later human edit wins**. This is deliberately "last-to-*edit* wins," not "last-to-*sync* wins": a device that made an edit at 10:00 but reconnects after one that edited at 10:05 correctly loses. No per-field HLC, no CRDT/OT — single-user. (Distinct from `sync_change_log.seq`, the global pull cursor.)
+- **Clock-skew caveat (accepted):** edit-time LWW trusts device wall-clocks, so cross-device skew could mis-order two near-simultaneous edits. Acceptable for a single self-hosted user. The record's `updated_at` only ever moves forward (`updated_at = max(current, editedAt)`), so an edit with a stale/backwards clock can lose but cannot rewind a record. Escalate to HLC only if skew becomes a real problem.
+- **Push reconcile:** a client edit carries the record's base `rev` **and its `editedAt`**. If the server's current `rev` still equals that base → apply, bump `rev`, set `updated_at = editedAt`. If the server moved on (its `rev` is higher) → **the record with the later `editedAt`/`updated_at` wins the whole record**; server returns the winner so the client converges.
 - **Accepted weakness (documented):** two *offline* edits to different fields of the **same** note (e.g. checking different checklist items on two devices) → one whole `items` blob overwrites the other, losing a change. Rare for a single user editing one device at a time. **Checklist item-level merge is a named future enhancement**, not built now (YAGNI).
 - **Deletes / tombstones:** native Notes hard-delete; the `after_delete` listener writes a `sync_change_log` `op=delete, id` row. Pull ships it; clients delete locally by id. **Delete wins** over a concurrent offline edit; a push to an already-deleted id is dropped and returned as a delete. A "trash/undo" softening is a later option.
 - **CalDAV coexistence (Calendar slice):** device-offline sync makes **odysseus the hub** in a 3-way `device ↔ odysseus ↔ CalDAV`. It composes only because push routes through the calendar service: a device edit → service applies → existing CalDAV write-back fires unchanged; a CalDAV-pulled change → updates the table → listener logs it → devices pull it. Device-vs-remote conflicts resolve by LWW at odysseus; CalDAV's own etag handling stays. This 3-way is why **Calendar comes after Notes**.
@@ -90,13 +92,16 @@ Each slice = its own spec → plan → build.
 
 ## 7. Slice A scope (what the implementation plan will cover next)
 
+**Order:** do **Cleanup first** (pure deletion — de-risks and clears the field), then the **CRUD extraction** (prerequisite), then the backend sync endpoints, then client, then frontend.
+
 **Backend**
-- Additive migration: `notes.updated_at` (DateTime, `onupdate`), `notes.rev` (monotonic).
+- **Prerequisite — extract note CRUD into callable service functions** (`create_note`/`update_note`/`delete_note`, plus the item/pin/archive mutators as needed) out of the closures in `routes/note/note_routes.py`, behavior-preserving; rewire the existing routes onto them. This is the gate for routing the sync push through one code path. (Largest single task — see §3.1.)
+- Additive migration: `notes.rev` (monotonic integer). (`updated_at` already exists via `TimestampMixin`; sync sets it from `editedAt` per §4, so relax/override its `onupdate` on the sync path.)
 - `sync_change_log` model (generic) + `create_*` helper, on `Base`, created at sync-router setup.
-- SQLAlchemy `after_insert/after_update/after_delete` listeners on `Note` → append change-log rows (owner, entity=`note`, id, op, rev).
+- Net-new SQLAlchemy `after_insert/after_update/after_delete` mapper listeners on `Note` → append change-log rows (owner, entity=`note`, id, op, rev).
 - `REGISTRY["note"]` with wire mapping (native `notes` columns incl. inline `items` JSON) + service hooks.
-- Generalized `/api/sync/pull` (cursor over `sync_change_log`, returns live `note` rows / delete tombstones) and `/api/sync/push` (per-record LWW via the note service create/update/delete; extract those service functions from `routes/note/note_routes.py` if they're inline). `/ping`. Owner-scoped.
-- Tests (house `asyncio.run` pattern — no pytest-asyncio): listener writes change-log; pull bootstrap + incremental; push LWW newer-wins / older-loses / delete-wins; owner gate.
+- Generalized `/api/sync/pull` (cursor over `sync_change_log`, returns live `note` rows / delete tombstones) and `/api/sync/push` (per-record LWW via the extracted note CRUD; push carries `editedAt`). `/ping`. Owner-scoped.
+- Tests (house `asyncio.run` pattern — no pytest-asyncio): CRUD-extraction parity (routes behave identically before/after); listener writes change-log; pull bootstrap + incremental; push LWW newer-`editedAt`-wins / older-loses / delete-wins; **own-echo does not clobber a newer local edit**; owner gate.
 
 **Client (bundled)**
 - Dev-time bundler config emitting `static/js/productivity/sync-core.js` (committed) from the TS engine + Dexie.
@@ -112,9 +117,9 @@ Each slice = its own spec → plan → build.
 ## 8. Risks & watch-outs
 
 - **Refactoring large existing modules** (`notes.js` 5.4k lines, later `calendar.js` 3.7k) — swap data access only; do not restructure UI. Contained but touches hot files → merge surface (accepted).
-- **Push through the service layer** — the note/calendar service functions may be inline in route handlers; extracting them cleanly (without behavior change) is prerequisite work. If extraction is risky, isolate the minimum.
+- **Push through the service layer** — confirmed: note CRUD is **inline in route closures, no service layer exists** (`routes/note/note_routes.py`). A behavior-preserving extraction into callable functions is a **hard prerequisite and Slice A's largest task**, gated before the push endpoint and covered by parity tests. Not optional — re-implementing writes in the push is rejected (drift). Same will be true for `calendar.js` in Slice C.
 - **CalDAV 3-way (Slice C)** — the genuinely hard part; sequence after Notes and after the mobile wrapper is proven.
-- **Committed generated bundle** — the `static/js/productivity/` bundle is a build artifact in git; document the regen command; ensure the source (TS engine) is the source of truth.
+- **Committed generated bundle** — the `static/js/productivity/` bundle is a build artifact in git; the source (TS engine) is the source of truth. The engine is small enough that a single `esbuild`/`tsc` → one committed ES module likely suffices (no full bundler config). Provide a `make`/npm regen target and an optional CI diff-check (rebuild must equal the committed file) to prevent source/artifact drift.
 - **Heavier fork divergence** — deeper native integration + additive columns/listeners on hot files raise the upstream-merge surface; the user has accepted less-frequent upstream syncing as the trade-off.
 
 ## 9. Out of scope / YAGNI
@@ -123,3 +128,4 @@ Each slice = its own spec → plan → build.
 - Browser (web) offline / PWA / service worker — offline is a mobile-only requirement now.
 - A second backend of any kind.
 - Checklist item-level merge, trash/undo — named future enhancements, not now.
+- **`sync_change_log` compaction/checkpointing** — the log is append-only and grows unbounded. Fine for a single self-hosted user at this scale; compaction (or squashing superseded rows per entity) is a named later enhancement, not built now.
