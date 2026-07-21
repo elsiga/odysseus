@@ -771,6 +771,10 @@ from routes.calendar_routes import setup_calendar_routes
 calendar_router = setup_calendar_routes(upload_handler=upload_handler)
 app.include_router(calendar_router)
 
+# Local-first per-field sync (SPA at /app)
+from routes.sync_routes import setup_sync_routes
+app.include_router(setup_sync_routes())
+
 # Shell (user-facing command execution)
 from routes.shell_routes import setup_shell_routes
 app.include_router(setup_shell_routes())
