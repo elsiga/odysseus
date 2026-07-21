@@ -1,135 +1,158 @@
-# Odysseus Mobile + Ember Task/Calendar Fusion — Program Design
+# Odysseus Offline-First Productivity App + Ember Fusion — Program Design
 
 **Date:** 2026-07-21
-**Status:** Approved (program level); individual slices to be specced separately
+**Status:** Approved (program level); individual slices specced separately
 **Owner:** Heike (elsiga)
 
 ## 1. Goal
 
-Run the **full odysseus workflow** (chat, agents, research, documents, email, notes,
-calendar) on a phone as an installable app, while **keeping the odysseus web app working
-and extending it** with a tight, interactive **task / Pomodoro / calendar-scheduling layer**
-inspired by the `ember` project. Add **Honcho** as a user-model "brain" in the odysseus
-backend. Prefer first-party (non-MCP) agent tooling and DeepSeek-class models.
+Add an **offline-first productivity layer** on top of odysseus — tasks, calendar, and
+Pomodoro first; **email drafting and document create/edit** later — that works offline and
+**syncs to the odysseus backend when online**. Keep the **odysseus web app working and
+extend it** with these same features, and deliver them on **Android** as an installable app.
+Reach the rest of the odysseus workflow (live chat, research, sending/receiving mail) online.
+Later, add **Honcho** as a user-model brain in odysseus. Prefer first-party (non-MCP) agent
+tooling and DeepSeek-class models.
+
+**Single backend, always: odysseus, extended as needed. No second backend is ever run.**
 
 ## 2. Key findings that shaped this design
 
-Two codebases were surveyed (`../odysseus`, `../ember`). The important reframing:
+Two codebases were surveyed (`odysseus`, `../ember`). The important reframing:
 
-- **Ember's "tighter calendar integration" is not built** — it exists only as a design doc
-  (`ember/ai-assistant-expansion-plan.md`). No calendar code (no Google, CalDAV, OAuth, sync).
+- **Ember's "tighter calendar integration" is not built** — it's only a design doc
+  (`../ember/ai-assistant-expansion-plan.md`). No calendar code exists there.
 - **The working calendar is in odysseus**: two-way **CalDAV sync** (`src/caldav_sync.py`),
   full event CRUD, `.ics`, RRULE recurrence, exposed to the agent as a **native Python
   function tool `manage_calendar`, not MCP**.
-- **Neither project uses LangChain** — both deliberately avoided it. odysseus is a
+- **Neither project uses LangChain** — both avoided it deliberately. odysseus is a
   provider-agnostic raw `httpx` client (`src/llm_core.py`); ember uses the Vercel AI SDK.
-  **Both already support DeepSeek + tool-calling.** No LangChain is needed or wanted.
+  **Both already support DeepSeek + tool-calling.** No LangChain is needed.
 - The agent's past "calendar via MCP" pain is a symptom of MCP + three **overlapping
   reminder mechanisms** (note `due_date` vs. calendar `reminder_minutes` vs. `ScheduledTask`),
   which confuse smaller models. First-party tools already sidestep MCP.
-- odysseus has **no mobile app** but ships a mobile-responsive **PWA** and a `companion/`
-  LAN pairing bridge + `ody_` bearer tokens explicitly meant for phone clients.
-- Ember's genuinely reusable pieces are **framework-agnostic pure TypeScript**: the
-  focus-timer state machine, quick-add parser, and local-first sync logic — plus a
-  Capacitor **native notification plugin**.
+- **Ember's genuine crown jewels are its local-first machinery**: a framework-agnostic
+  **HLC/outbox sync engine** (`../ember/packages/shared` + `apps/web/src/sync`) and a
+  **pure-state-machine focus/Pomodoro timer** (`apps/web/src/features/focus`). Both are
+  React/Vite/TypeScript — the **same stack we'll build the new SPA in, so ember code is
+  reused directly, not just referenced.**
 
 ## 3. Foundation decision
 
-**Build on the odysseus backend; deliver the UI as odysseus's own frontend wrapped in
-Capacitor.**
+**Build a new local-first SPA, served by odysseus, bundled into an Android app. One backend.**
 
-- Keep odysseus's Python/FastAPI backend as-is (agent loop, auth, CalDAV calendar,
-  scheduling, MCP). Rewriting it in TypeScript was considered and rejected — it re-builds
-  the exact thing we want to avoid rebuilding.
-- Build the new task/Pomodoro/calendar features **into odysseus's own web frontend**
-  (`static/js/`) so the **web app is extended, not forked**.
-- The **mobile app is the same frontend wrapped in Capacitor** pointing at the backend over
-  a Cloudflare Tunnel — one codebase, web + mobile, no second frontend to maintain.
-- Reuse ember's **logic** (framework-agnostic TS), not its React components; render in
-  odysseus's existing vanilla-ES-module style. (Whether a small embedded React "island" is
-  used for the task screens is a Slice 2 design decision, deferred.)
+- Keep odysseus's Python/FastAPI backend as the sole backend; extend it with **new files +
+  one-line hooks** as features need (sync endpoints, agent tools, Honcho).
+- Build the productivity layer as a **new local-first SPA** (React + Vite, reusing ember's
+  sync engine + focus timer + components). It owns a **local store** (IndexedDB in the
+  browser) and **syncs to odysseus** when online.
+- **odysseus serves the SPA** at a route → the **web app gains** these features, offline-
+  capable as a **PWA** (service worker + IndexedDB). Same-origin in the browser, so it uses
+  the normal **cookie/TOTP session** — no token, no CORS.
+- The **same SPA is bundled into a Capacitor app (Android first)**. Bundled ⇒ it loads from
+  a local origin (cross-origin to `chat.elsiga.ch`), so there it authenticates with the
+  **`ody_` bearer token** in secure storage, and odysseus's `ALLOWED_ORIGINS` must include
+  the Capacitor origin. A small **auth adapter** lets the one codebase use cookie-session in
+  the browser and token in the app. iOS is possible later (Heike's MacBook + Xcode).
+- **Online-only odysseus features** (live chat, research, full mail send/receive, existing
+  document views) are reached by **linking out to the existing odysseus web UI** — not
+  reimplemented.
+- **Sync is the backbone.** A generic local-store ↔ odysseus reconcile (pull/push, LWW on
+  timestamps), with a clean seam to add domains. Tasks/calendar are its first tenants;
+  email drafts and documents are added later — that is the "option 3 → option 1" path.
 
 ### Reuse map
 
 | Capability | Source | Action |
 | --- | --- | --- |
 | Agent loop, auth, multi-provider LLM (DeepSeek incl.) | odysseus | Keep |
-| Calendar + CalDAV two-way sync | odysseus | Keep, extend |
-| Todo/checklist model (`Note`), scheduling (`ScheduledTask`) | odysseus | Extend |
+| Calendar + CalDAV two-way sync; email; documents; research | odysseus | Keep, extend |
+| Todo/checklist (`Note`), scheduling (`ScheduledTask`), calendar (`CalendarEvent`) | odysseus | Extend + expose via sync API |
 | Native agent tools (`manage_calendar`, `manage_notes`) | odysseus | Extend |
-| Focus-timer state machine, quick-add parser, sync logic | ember | Port (logic only) |
-| Capacitor native notification plugin | ember | Vendor |
-| Calendar integration design | ember plan | Reference only (odysseus already has real one) |
+| **HLC/outbox local-first sync engine** | ember | **Reuse/port into the SPA** |
+| **Focus/Pomodoro state machine** | ember | **Reuse/port into the SPA** |
+| Todo UX, quick-add parser, React components | ember | Reuse where useful |
+| Ember's server / Postgres / auth | ember | **Not used** (single backend = odysseus) |
 
 ## 4. Architecture & access
 
-- **Transport:** Cloudflare Tunnel (outbound-only `cloudflared`, no exposed ports); one
-  stable HTTPS URL serves both the laptop web app and the phone app.
-- **Auth:** odysseus's existing auth. Web = session cookie; mobile app = `ody_` **bearer
-  token** stored in device **secure storage** (Keychain/Keystore), not plain Preferences.
-  Token is a password-equivalent, revocable via the `ApiToken` table if the phone is lost.
-- **Hardening:** TOTP 2FA enabled; strong admin password; optional Cloudflare WAF
-  rate-limit on the login route. Known trade-off: Cloudflare terminates TLS at its edge.
+- **SPA:** React + Vite, local-first (IndexedDB), served by odysseus at a route and bundled
+  into Capacitor. PWA service worker for browser offline.
+- **Sync:** new odysseus **sync-friendly endpoints** (pull changes since a cursor/timestamp;
+  push with LWW conflict resolution) over the domains' existing tables. Client sync loop
+  ported from ember.
+- **Transport:** Cloudflare Tunnel (`cloudflared` container in `docker-compose.override.yml`,
+  gitignored) → `chat.elsiga.ch` → `http://odysseus:7000`. No host ports exposed. Serves
+  both the laptop web app and the phone app.
+- **Auth:** browser SPA = cookie/TOTP session (same-origin). Bundled app = `ody_` bearer
+  token in device secure storage (Keychain/Keystore), revocable via the `ApiToken` table.
+  Embedded odysseus web view (for online-only features) logs in normally.
+- **Hardening:** TOTP on; strong admin password; `SECURE_COOKIES=true` once HTTPS is live;
+  `ALLOWED_ORIGINS` includes the Capacitor origin; optional Cloudflare WAF login rate-limit.
+  Known trade-off: Cloudflare terminates TLS at its edge.
 
 ## 5. Fork & upstream strategy
 
-- Fork = `origin` (elsiga/odysseus); `upstream` = odysseus-dev/odysseus. All work on the
-  long-lived `integration` branch (default branch of the fork).
-- **Weekly auto-merge** via `.github/workflows/sync-upstream.yml`: clean merges of
-  `upstream/dev` are pushed automatically; conflicts fail the job and email for manual
-  resolution.
-- **Minimize merge pain by minimizing edits to odysseus "hot files."** Conflicts come
-  almost entirely from four touchpoints; keep changes there to one-line hooks and put all
-  logic in new files:
-  - `app.py` — router registration (one-line `include_router`)
-  - `core/database.py` — models + hand-rolled `_migrate_add_*` migrations
+- Fork = `origin` (elsiga/odysseus); `upstream` = odysseus-dev/odysseus. Work on the
+  long-lived `integration` branch (the fork's default branch).
+- **Weekly auto-merge** via `.github/workflows/sync-upstream.yml`: clean merges pushed
+  automatically; conflicts fail the job and email for manual resolution.
+- **Minimize edits to odysseus "hot files"; put logic in new files.** Conflict-prone
+  touchpoints, kept to one-line hooks:
+  - `app.py` — router registration + serving the SPA route
+  - `core/database.py` — additive columns via the existing `_migrate_add_*` pattern
   - `src/tool_schemas.py` / tool registry — agent-tool registration
-  - `static/index.html` / `static/app.js` — frontend module wiring
-- **Upstream generic improvements** (e.g. reminder-model cleanup) back to odysseus to
-  shrink the fork's delta.
-- **Ember reference material stays out of git** (gitignored `reference/` or left in
-  `../ember`) to avoid polluting merges and mixing licenses.
+- The **SPA lives in its own new subtree** in the fork (e.g. `webapp/`); the Capacitor
+  project in another (e.g. `mobile/`). Both are new files — no upstream-merge surface.
+- `docker-compose.override.yml`, `.env`, `data/` stay local/gitignored.
+- **Upstream generic improvements** (e.g. reminder-model cleanup, sync endpoints if welcome)
+  back to odysseus to shrink the fork's delta.
+- **Ember stays at `../ember`, read-only** — code is ported in, never vendored, to avoid
+  polluting merges and mixing licenses.
 
 ## 6. Slice decomposition (each gets its own spec → plan → build)
 
-1. **Mobile shell** — Capacitor app loading the live site (`server.url = https://chat.elsiga.ch`)
-   over the Cloudflare Tunnel; cookie + TOTP auth as in the browser. Ships the full odysseus
-   workflow (email, docs, chat, research) to the phone. **Online-only** — Capacitor's
-   `server.url` is all-or-nothing, so this slice has no offline behaviour. Unblocks phone
-   access fastest.
-2. **Offline-capable task / Pomodoro / calendar layer** (the bulk) — a **local-first module
-   bundled in the app** (not part of the remote webview): stores locally so tasks/calendar/
-   Pomodoro work offline, and **syncs to odysseus when back online**. Extends
-   `Note` / `ScheduledTask` / `CalendarEvent` + native agent tools (new files, one-line
-   hooks); ports ember's focus-timer, quick-add, todo UX, and — crucially — its local-first
-   sync engine. Needs its own brainstorm: odysseus's endpoints are plain CRUD, so the
-   offline→sync reconcile (local store + pull/push, LWW on timestamps) is real engineering.
-   Architecture note: because the shell is a remote webview, this module lands as bundled
-   local assets / native screens, so the "shared with web `static/js/`" assumption is
-   revisited here.
-3. **Reminder untangling** — collapse the three overlapping reminder mechanisms so
+Order reflects "option 3 now → option 1 later," easiest sync first:
+
+1. **SPA + sync foundation + tasks (offline)** — scaffold the local-first SPA (React/Vite,
+   ember sync engine), add odysseus sync endpoints for the `Note` domain, serve the SPA from
+   odysseus as a browser PWA. Thinnest vertical that proves the full local-first ↔ odysseus
+   loop end-to-end. Web-first (no native build yet).
+2. **Calendar + Pomodoro in the SPA** — extend sync to `CalendarEvent`; port ember's focus
+   timer; task→calendar scheduling.
+3. **Capacitor Android packaging** — bundle the SPA, `ody_` token auth + CORS, native
+   notifications (ember's plugin), link-out to the odysseus web workspace. Installable app.
+4. **Email drafts (offline)** — new sync domain: draft locally, push to odysseus, send when
+   online.
+5. **Document create/edit (offline)** — the hard one, but eased by odysseus's design.
+   odysseus documents are already **last-write-wins with full version history**
+   (`PUT /api/document/{doc_id}` overwrites `current_content` but appends a `DocumentVersion`;
+   restorable via `/restore/{num}`). Single-user, so start with **per-document LWW on sync**
+   and let overwritten edits fall into that existing version history as the "conflict copy"
+   — no new conflict machinery. CRDT/OT only if it ever bites.
+6. **Reminder untangling** — collapse the three overlapping reminder mechanisms so
    DeepSeek-class models stop fumbling calendar ops; upstream the generic parts.
-4. **Honcho user-model brain** — backend integration into odysseus's memory layer.
+7. **Honcho user-model brain** — backend integration into odysseus's memory layer.
 
 ## 7. Risks & watch-outs
 
-- **Hand-rolled SQLite migrations** (no Alembic) in `core/database.py` — additive columns
-  via the existing `_migrate_add_*` pattern; a conflict-prone hot file.
-- **Reminder overlap** already confuses the agent — Slice 3 must not be skipped.
-- **Vanilla-JS vs React island** for the task UI — decide in Slice 2; affects reuse effort.
-- **Offline behavior**: offline is **required for the task/calendar/Pomodoro layer** (Slice
-  2) via a bundled local-first module that syncs to odysseus when online — reusing ember's
-  sync engine. The rest of the odysseus workflow (email, docs, chat) stays online-only
-  (remote webview). Building offline→sync against odysseus's CRUD endpoints is the main
-  Slice 2 risk and gets its own brainstorm.
-- **Cloudflare edge TLS termination** — accepted trade-off vs. the convenience of a public
-  URL for laptop + phone.
+- **Sync against CRUD endpoints** — odysseus's APIs are CRUD, not delta-sync; Slice 1 must
+  add a sync-friendly contract (change cursor + LWW). This is the core new engineering.
+- **Document text conflicts (Slice 5)** — freeform text isn't safely LWW; pick a policy
+  explicitly, don't hand-wave. Hardest offline domain; sequenced last of the offline set.
+- **Two auth contexts** — cookie (browser SPA) vs. `ody_` token (bundled app); one auth
+  adapter, tested both ways. CORS/`ALLOWED_ORIGINS` must include the Capacitor origin.
+- **Hand-rolled SQLite migrations** (no Alembic) in `core/database.py` — additive only.
+- **Reminder overlap** already confuses the agent — Slice 6 must not be skipped.
+- **PWA offline caching correctness** — service-worker versioning/update flow needs care.
+- **Native builds run on the Mac**, code + backend live on this Linux server (SSH) — the
+  build/deploy loop crosses machines; keep the SPA browser-testable to minimize native cycles.
 
 ## 8. Out of scope / YAGNI (initially)
 
+- A second backend of any kind (ember-server, separate sync server). Odysseus only.
 - Rewriting the odysseus backend in TypeScript.
-- Offline for the *rest* of the odysseus workflow (email, docs, chat) — those stay
-  online-only. (Offline for tasks/calendar/Pomodoro is now IN scope; see Slice 2.)
-- Google Calendar API integration (odysseus's CalDAV already covers the need).
-- MCP-based calendar/task tooling (native tools are preferred).
+- Full CRDT/OT for documents up front — start with a simpler conflict policy (Slice 5).
+- iOS as the lead platform — Android first; iOS is a later add on the Mac.
+- MCP-based calendar/task tooling (native tools preferred).
 - Cloudflare Access outer auth layer (odysseus auth + TOTP deemed sufficient).
