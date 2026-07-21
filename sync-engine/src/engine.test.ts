@@ -1,0 +1,62 @@
+import 'fake-indexeddb/auto'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { db } from './db'
+import { syncedUpsert } from './localWrite'
+import { createSyncClient } from './engine'
+
+beforeEach(async () => { await db.notes.clear(); await db.outbox.clear(); await db.meta.clear() })
+
+function fakeServer() {
+  const store = new Map<string, any>()
+  let seq = 0
+  const log: any[] = []
+  return async (input: string, init?: RequestInit) => {
+    const url = new URL(input, 'http://t')
+    if (url.pathname.endsWith('/push')) {
+      const { changes } = JSON.parse(String(init!.body))
+      const results = changes.map((ch: any) => {
+        if (ch.op === 'delete') { store.delete(ch.id); log.push({ ...ch, seq: ++seq }); return { entity: 'note', id: ch.id, op: 'delete', rev: null, record: null } }
+        const prev = store.get(ch.id)
+        const rev = (prev?.rev ?? 0) + 1
+        const rec = { ...ch.record, id: ch.id, rev, updated_at: ch.editedAt }
+        store.set(ch.id, rec); log.push({ ...ch, seq: ++seq })
+        return { entity: 'note', id: ch.id, op: 'upsert', rev, record: rec }
+      })
+      return new Response(JSON.stringify({ results, cursor: seq }), { status: 200 })
+    }
+    const cursor = Number(url.searchParams.get('cursor') || 0)
+    const changes = cursor <= 0
+      ? [...store.values()].map((r) => ({ entity: 'note', id: r.id, op: 'upsert', rev: r.rev, record: r }))
+      : log.filter((l) => l.seq > cursor).map((l) => { const r = store.get(l.id); return r ? { entity: 'note', id: r.id, op: 'upsert', rev: r.rev, record: r } : { entity: 'note', id: l.id, op: 'delete', rev: null, record: null } })
+    return new Response(JSON.stringify({ changes, cursor: seq, hasMore: false }), { status: 200 })
+  }
+}
+
+describe('engine', () => {
+  it('pushes a local note and reconciles rev without duplicating on echo', async () => {
+    const client = createSyncClient({ fetchFn: fakeServer() as any })
+    await syncedUpsert({ id: 'n1', title: 'hello' })
+    await client.syncOnce()
+    let row = await db.notes.get('n1')
+    expect(row?._baseRev).toBe(1)
+    expect(row?._dirty).toBe(0)
+    // second sync pulls our own echo back — must not clobber or duplicate
+    await client.syncOnce()
+    row = await db.notes.get('n1')
+    expect(row?._baseRev).toBe(1)
+    expect((await db.notes.toArray()).length).toBe(1)
+  })
+
+  it('applies a remote note on pull', async () => {
+    const server = fakeServer()
+    // seed the server via a first client
+    const c1 = createSyncClient({ fetchFn: server as any })
+    await syncedUpsert({ id: 'remote1', title: 'from-other-device' })
+    await c1.syncOnce()
+    // fresh local store, pull it down
+    await db.notes.clear(); await db.outbox.clear(); await db.meta.clear()
+    const c2 = createSyncClient({ fetchFn: server as any })
+    await c2.syncOnce()
+    expect((await db.notes.get('remote1'))?.title).toBe('from-other-device')
+  })
+})
