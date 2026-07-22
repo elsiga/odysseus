@@ -266,7 +266,6 @@ if AUTH_ENABLED:
         "/api/health",
         "/api/version",
         "/login",
-        "/sw-native.js",
     }
     AUTH_EXEMPT_PREFIXES = ["/static"]
     # Dynamic paths whose own handler proves identity via a path-embedded
@@ -941,14 +940,6 @@ async def serve_library(request: Request):
 # Local-first SPA shell (webapp/dist) is now served entirely by the
 # `/app` StaticFiles mount above (_SpaStatic), so the service worker's
 # scope covers exactly `/app/`. See the mount's comment for why.
-
-@app.get("/sw-native.js", include_in_schema=False)
-async def _sw_native():
-    return FileResponse(
-        os.path.join(STATIC_DIR, "sw-native.js"),
-        media_type="application/javascript",
-        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
-    )
 
 @app.get("/backgrounds")
 async def serve_backgrounds(request: Request):
