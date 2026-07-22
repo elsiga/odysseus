@@ -1,0 +1,13 @@
+{
+  "name": "odysseus-mobile",
+  "private": true,
+  "version": "0.1.0",
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2",
+    "typescript": "^5.9.3"
+  }
+}

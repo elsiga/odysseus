@@ -109,3 +109,8 @@ _scratch/
 # New SPA (webapp/) build + deps
 webapp/node_modules/
 webapp/dist/
+
+# Slice B — Capacitor mobile app
+mobile/node_modules/
+mobile/android/
+dist/
