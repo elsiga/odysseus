@@ -83,3 +83,37 @@ describe('engine', () => {
     expect((await db.notes.get('n2'))?.title).toBe('dirty-local')
   })
 })
+
+describe('authHeader + apiBase seam', () => {
+  it('sends Authorization and hits the absolute base URL on pull', async () => {
+    await db.meta.put({ key: 'cursor', value: 0 })
+    const calls: Array<{ url: string; headers: Record<string, string> }> = []
+    const fetchFn = (async (url: any, init: any) => {
+      calls.push({ url: String(url), headers: { ...(init?.headers ?? {}) } })
+      return { ok: true, json: async () => ({ changes: [], cursor: 0, hasMore: false }) }
+    }) as any
+    const client = createSyncClient({
+      apiBase: 'https://chat.elsiga.ch/api/sync',
+      fetchFn,
+      authHeader: () => ({ Authorization: 'Bearer ody_test' }),
+    })
+    await client.syncOnce()
+    const pull = calls.find((c) => c.url.includes('/pull'))!
+    expect(pull.url.startsWith('https://chat.elsiga.ch/api/sync/pull')).toBe(true)
+    expect(pull.headers.Authorization).toBe('Bearer ody_test')
+  })
+
+  it('omits Authorization when no authHeader is given (web path unchanged)', async () => {
+    await db.meta.put({ key: 'cursor', value: 0 })
+    const calls: Array<{ url: string; headers: Record<string, string> }> = []
+    const fetchFn = (async (url: any, init: any) => {
+      calls.push({ url: String(url), headers: { ...(init?.headers ?? {}) } })
+      return { ok: true, json: async () => ({ changes: [], cursor: 0, hasMore: false }) }
+    }) as any
+    const client = createSyncClient({ fetchFn })
+    await client.syncOnce()
+    const pull = calls.find((c) => c.url.includes('/pull'))!
+    expect(pull.url.startsWith('/api/sync/pull')).toBe(true)
+    expect(pull.headers.Authorization).toBeUndefined()
+  })
+})

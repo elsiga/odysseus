@@ -12,15 +12,18 @@ function stripMeta(row: NoteRow): Record<string, unknown> {
 
 export interface SyncClient { syncOnce(): Promise<void>; start(): void; stop(): void }
 
-export function createSyncClient(opts: { apiBase?: string; fetchFn?: typeof fetch } = {}): SyncClient {
+export function createSyncClient(opts: { apiBase?: string; fetchFn?: typeof fetch; authHeader?: () => Record<string, string> } = {}): SyncClient {
   const apiBase = opts.apiBase ?? '/api/sync'
   const fetchFn = opts.fetchFn ?? ((i: any, init?: any) => fetch(i, init))
+  const authHeader = opts.authHeader
   let queue: Promise<void> = Promise.resolve()
   let failures = 0, nextAllowedAt = 0
   let timer: any = null, interval: any = null
 
   async function api(path: string, init?: RequestInit): Promise<any> {
-    const res = await fetchFn(`${apiBase}${path}`, { credentials: 'same-origin', ...init })
+    const extra = authHeader ? authHeader() : {}
+    const headers = { ...extra, ...(init?.headers as Record<string, string> | undefined) }
+    const res = await fetchFn(`${apiBase}${path}`, { credentials: 'same-origin', ...init, headers })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return res.json()
   }

@@ -6353,11 +6353,14 @@ function stripMeta(row) {
 function createSyncClient(opts = {}) {
   const apiBase = opts.apiBase ?? "/api/sync";
   const fetchFn = opts.fetchFn ?? ((i, init) => fetch(i, init));
+  const authHeader = opts.authHeader;
   let queue = Promise.resolve();
   let failures = 0, nextAllowedAt = 0;
   let timer = null, interval = null;
   async function api(path, init) {
-    const res = await fetchFn(`${apiBase}${path}`, { credentials: "same-origin", ...init });
+    const extra = authHeader ? authHeader() : {};
+    const headers = { ...extra, ...init?.headers };
+    const res = await fetchFn(`${apiBase}${path}`, { credentials: "same-origin", ...init, headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   }
