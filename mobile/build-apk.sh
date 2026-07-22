@@ -6,6 +6,10 @@ export ANDROID_HOME="${ANDROID_HOME:-/home/elsiga/Android/Sdk}"
 export JAVA_HOME="${JAVA_HOME:-/home/elsiga/jdks/jdk-17.0.19+10}"
 export PATH="$JAVA_HOME/bin:$PATH"
 
+# Copy the committed local-first sync bundle into the webDir so the shell is self-contained.
+mkdir -p www/js
+cp ../static/js/productivity/sync-core.js www/js/sync-core.js
+
 npm install
 [ -d android ] || npx cap add android
 npx cap sync android

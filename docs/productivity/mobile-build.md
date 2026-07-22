@@ -1,26 +1,35 @@
-# Odysseus Android app (Slice B) — build & install
+# Odysseus Android app (Slice B, Path B) — build & install
 
-The Android app is a Capacitor wrapper that loads `https://chat.elsiga.ch` in a
-native WebView, with a Capacitor-only service worker (`static/sw-native.js`) for
-cold-offline. It is built on the Linux server.
+The Android app bundles its own offline task shell (loads with no network) and
+syncs the Notes/todo domain to `https://chat.elsiga.ch/api/sync` using a scoped
+bearer token. Built on the Linux server.
 
 ## Build the APK
 ```
 ./mobile/build-apk.sh        # → dist/odysseus.apk
 ```
-`mobile/android/` and `dist/` are gitignored (generated / binary). Re-run any time.
+Requires a full JDK 17 (not just a JRE); the script defaults
+`JAVA_HOME=/home/elsiga/jdks/jdk-17.0.19+10` (override via `JAVA_HOME`).
+`mobile/{android,node_modules}`, `mobile/www/js/sync-core.js`, and `dist/` are gitignored.
 
-The build requires a full JDK 17 (not just a JRE — Gradle needs `jlink`); the
-script defaults `JAVA_HOME` to `/home/elsiga/jdks/jdk-17.0.19+10`, overridable
-via the `JAVA_HOME` env var.
+## Server config (one-time)
+Add the app origin to `ALLOWED_ORIGINS` in `.env` so its cross-origin sync calls
+are CORS-allowed, then restart odysseus:
+```
+ALLOWED_ORIGINS=…existing…,https://localhost
+```
 
-## Install on a device (USB debugging on) or emulator
+## Mint a sync token
+In odysseus admin → API tokens, mint a token with the `mobile_sync` profile
+(scopes `sync:read`, `sync:write`). Copy the `ody_…` value once.
+
+## Install + first run
 ```
 adb install -r dist/odysseus.apk
 ```
-Or download `dist/odysseus.apk` (scp) and open it on the phone to sideload.
+Open the app → ⚙ → paste the `ody_…` token → Save. Tasks load and sync.
+The token is stored in app-private storage; revoke it server-side any time.
 
-## First run
-Launch **online once** and log in (TOTP) so the service worker caches the app
-shell. After that, a cold launch works offline (Notes edits queue locally and
-sync on reconnect).
+## Cold-offline proof (result)
+
+PENDING — awaiting on-device run (no adb device attached at build time). To verify: airplane mode → create a task → fully close app → reopen offline → shell must load (not ERR_NAME_NOT_RESOLVED) with the task present → disable airplane mode → outbox drains.
