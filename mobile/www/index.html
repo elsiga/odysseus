@@ -1,6 +1,59 @@
 <!doctype html>
-<meta charset="utf-8">
-<title>Odysseus</title>
-<body style="background:#171E28;color:#A9CBDC;font-family:monospace;display:grid;place-items:center;height:100vh;margin:0">
-<p>Loading Odysseus…</p>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Odysseus Tasks</title>
+  <style>
+    :root { --bg:#171E28; --panel:#1E2733; --fg:#A9CBDC; --muted:#5C7080; --red:#FF6B5E; --line:#2A3644; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--fg); font-family:'Fira Code',ui-monospace,monospace;
+           padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+    header { padding:16px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
+    header h1 { font-size:16px; margin:0; letter-spacing:.05em; }
+    #settings-btn { background:none; border:1px solid var(--line); color:var(--muted); border-radius:6px; padding:4px 8px; }
+    main { padding:12px 16px 96px; }
+    .task { display:flex; align-items:center; gap:10px; padding:12px; border:1px solid var(--line);
+            border-radius:8px; margin-bottom:8px; background:var(--panel); }
+    .task input[type=checkbox] { width:20px; height:20px; accent-color:var(--red); }
+    .task span { flex:1; }
+    .task.done span { color:var(--muted); text-decoration:line-through; }
+    .task button { background:none; border:none; color:var(--muted); font-size:18px; }
+    #composer { position:fixed; left:0; right:0; bottom:0; display:flex; gap:8px; padding:12px 16px;
+                background:var(--bg); border-top:1px solid var(--line); }
+    #composer input { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--fg);
+                      border-radius:8px; padding:12px; font:inherit; }
+    #composer button { background:var(--red); color:var(--bg); border:none; border-radius:8px; padding:0 16px; font:inherit; }
+    #token-panel { padding:24px 16px; }
+    #token-panel textarea { width:100%; height:80px; background:var(--panel); color:var(--fg);
+                            border:1px solid var(--line); border-radius:8px; padding:12px; font:inherit; }
+    #token-panel button { margin-top:12px; background:var(--red); color:var(--bg); border:none;
+                          border-radius:8px; padding:12px 16px; font:inherit; }
+    .hidden { display:none !important; }
+    #status { font-size:11px; color:var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ODYSSEUS · TASKS</h1>
+    <div><span id="status"></span> <button id="settings-btn">⚙</button></div>
+  </header>
+
+  <section id="token-panel" class="hidden">
+    <p>Paste your sync API token (<code>ody_…</code>). Mint it in odysseus admin → API tokens with the <code>mobile_sync</code> profile.</p>
+    <textarea id="token-input" placeholder="ody_…" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+    <button id="token-save">Save token</button>
+  </section>
+
+  <main id="app" class="hidden">
+    <div id="list"></div>
+  </main>
+
+  <div id="composer" class="hidden">
+    <input id="new-task" placeholder="New task…" autocapitalize="sentences">
+    <button id="add-btn">Add</button>
+  </div>
+
+  <script type="module" src="./js/app.js"></script>
 </body>
+</html>

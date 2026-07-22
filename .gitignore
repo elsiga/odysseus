@@ -113,4 +113,5 @@ webapp/dist/
 # Slice B — Capacitor mobile app
 mobile/node_modules/
 mobile/android/
+mobile/www/js/sync-core.js
 /dist/
