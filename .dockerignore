@@ -1,7 +1,9 @@
 venv/
 .venv/
 node_modules/
+**/node_modules/
 services/node_modules/
+webapp/
 __pycache__/
 *.pyc
 *.pyo
