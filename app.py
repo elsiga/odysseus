@@ -944,7 +944,6 @@ async def serve_library(request: Request):
 
 @app.get("/sw-native.js", include_in_schema=False)
 async def _sw_native():
-    from fastapi.responses import FileResponse
     return FileResponse(
         os.path.join(STATIC_DIR, "sw-native.js"),
         media_type="application/javascript",

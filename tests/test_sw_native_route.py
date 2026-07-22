@@ -10,5 +10,6 @@ def test_sw_native_served_with_scope_header():
             assert r.status_code == 200
             assert "javascript" in r.headers["content-type"]
             assert r.headers.get("service-worker-allowed") == "/"
+            assert r.headers.get("cache-control") == "no-cache"
             assert "addEventListener" in r.text  # it's the actual SW source
     asyncio.run(_run())

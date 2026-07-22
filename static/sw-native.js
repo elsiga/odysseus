@@ -25,7 +25,9 @@ self.addEventListener('fetch', (e) => {
     e.respondWith((async () => {
       try {
         const net = await fetch(req);
-        (await caches.open(SHELL)).put(req, net.clone());
+        if (net && net.ok && !net.redirected) {
+          (await caches.open(SHELL)).put(req, net.clone());
+        }
         return net;
       } catch {
         const cache = await caches.open(SHELL);
@@ -39,7 +41,10 @@ self.addEventListener('fetch', (e) => {
   e.respondWith((async () => {
     const cache = await caches.open(SHELL);
     const cached = await cache.match(req);
-    const network = fetch(req).then((net) => { cache.put(req, net.clone()); return net; }).catch(() => null);
+    const network = fetch(req).then((net) => {
+      if (net && net.ok) cache.put(req, net.clone());
+      return net;
+    }).catch(() => null);
     return cached || (await network) || Response.error();
   })());
 });
