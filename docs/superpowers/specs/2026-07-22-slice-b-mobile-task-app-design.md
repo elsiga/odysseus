@@ -83,7 +83,7 @@ Each sub-slice = its own plan → SDD build, in order. Each ends independently t
 
 ## 7. Risks & watch-outs
 
-- **Android build environment** — the APK build needs the Android SDK/Gradle/JDK. **Prerequisite to confirm at B1:** does this run on the Linux server or the user's Mac? (Wrapper config + SW + JS are authored here regardless.)
+- **Android build environment (resolved):** the APK is built **on the Linux server** (Android SDK/Gradle/JDK present there). The build outputs the APK to **`dist/`** in the repo (e.g. `dist/odysseus.apk`) for easy download/testing. `dist/` is **gitignored** (built binary artifact, not committed); a documented one-line build command produces it, and it can be downloaded via scp or a simple static route.
 - **Cookie persistence in the WebView** across app launches under `SECURE_COOKIES` — verify Capacitor persists the session cookie so the user isn't logged out each cold start.
 - **SW cache staleness after a deploy** — version the cache + stale-while-revalidate so a new online launch refreshes the shell; a bad SW can "pin" an old app.
 - **First-launch-must-be-online** for the cache to populate — acceptable, documented.
