@@ -18,6 +18,12 @@ are CORS-allowed, then restart odysseus:
 ```
 ALLOWED_ORIGINS=…existing…,https://localhost
 ```
+Note: CORS is global middleware with `allow_credentials=True`, so this origin is
+allowed for *all* API routes, not just `/api/sync`. `https://localhost` is the
+machine-local Capacitor WebView origin; keep it as a deploy-time `.env` entry
+(never committed) and don't add broader public origins alongside it. The app
+itself authenticates with a bearer header and `same-origin` credentials, so it
+does not depend on credentialed CORS.
 
 ## Mint a sync token
 In odysseus admin → API tokens, mint a token with the `mobile_sync` profile
