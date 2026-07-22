@@ -65,7 +65,16 @@ function showTokenPanel() {
 async function boot() {
   el('add-btn').addEventListener('click', addTask);
   el('new-task').addEventListener('keydown', (e) => { if (e.key === 'Enter') addTask(); });
-  el('settings-btn').addEventListener('click', showTokenPanel);
+  // ⚙ is only reachable once a token is saved, so offer a way back to the list.
+  el('settings-btn').addEventListener('click', () => {
+    el('token-back').classList.remove('hidden');
+    showTokenPanel();
+  });
+  el('token-back').addEventListener('click', () => {
+    el('token-input').value = '';
+    showApp();
+    void renderList();
+  });
   el('token-save').addEventListener('click', async () => {
     const t = el('token-input').value.trim();
     if (!t.startsWith('ody_')) { setStatus('bad token'); return; }
@@ -80,7 +89,8 @@ async function boot() {
 async function start() {
   const token = await getToken();
   await renderList();               // always render local data first (works offline)
-  if (!token) { showTokenPanel(); setStatus('no token'); return; }
+  // First run (no token yet): nowhere to go back to, so keep Back hidden.
+  if (!token) { el('token-back').classList.add('hidden'); showTokenPanel(); setStatus('no token'); return; }
   showApp();
   client = createSyncClient({
     apiBase: API_BASE,
