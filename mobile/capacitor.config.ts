@@ -5,8 +5,7 @@ const config: CapacitorConfig = {
   appName: 'Odysseus',
   webDir: 'www',
   server: {
-    url: 'https://chat.elsiga.ch',
-    cleartext: false,
+    androidScheme: 'https',
   },
 };
 
