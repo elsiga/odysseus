@@ -23,6 +23,7 @@ async function renderList() {
     cb.checked = !!n.done;
     cb.addEventListener('change', async () => {
       await notesRepo.update(n.id, { done: cb.checked });
+      await renderList();               // repaint from committed data (await = committed)
       void client?.syncOnce();
     });
     const label = document.createElement('span');
@@ -31,6 +32,7 @@ async function renderList() {
     del.textContent = '×';
     del.addEventListener('click', async () => {
       await notesRepo.remove(n.id);
+      await renderList();               // repaint from committed data
       void client?.syncOnce();
     });
     row.append(cb, label, del);
@@ -44,6 +46,7 @@ async function addTask() {
   if (!title) return;
   input.value = '';
   await notesRepo.create({ title, done: false });
+  await renderList();                   // repaint immediately (await = committed to Dexie)
   void client?.syncOnce();
 }
 
@@ -71,9 +74,6 @@ async function boot() {
     await start();
   });
 
-  // notesRepo drives the UI; re-render on any local change.
-  notesRepo.subscribe(() => { void renderList(); });
-
   await start();
 }
 
@@ -88,6 +88,11 @@ async function start() {
   });
   client.start();
   setStatus('syncing');
+  // start() kicks an internal sync; await one more so the initial pull's rows
+  // (and any remote changes) are painted, then reflect that sync settled.
+  await client.syncOnce();
+  await renderList();
+  setStatus(navigator.onLine ? 'synced' : 'offline');
 }
 
 boot();
