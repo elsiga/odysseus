@@ -11,6 +11,7 @@ mkdir -p www/js
 cp ../static/js/productivity/sync-core.js www/js/sync-core.js
 
 npm install
+node build.mjs                          # bundle src/ → www/js/app.js
 [ -d android ] || npx cap add android
 npx cap sync android
 
