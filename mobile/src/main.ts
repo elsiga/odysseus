@@ -6,6 +6,7 @@ import { Capture } from './screens/Capture'
 import { Library } from './screens/Library'
 import { Project } from './screens/Project'
 import { Detail } from './screens/Detail'
+import { scheduleTestNotification } from './notify'
 import type { NoteRec } from './notes'
 
 type Route = { name: 'home' } | { name: 'capture'; project?: string } | { name: 'library' }
@@ -25,11 +26,13 @@ function Root() {
   if (route.name === 'home')
     return html`<${Home} notes=${store.notes} status=${store.status}
       onToggle=${store.toggle} onOpen=${openDetail}
-      onCapture=${() => setRoute({ name: 'capture' })} onLibrary=${() => setRoute({ name: 'library' })} />`
+      onCapture=${() => setRoute({ name: 'capture' })} onLibrary=${() => setRoute({ name: 'library' })}
+      onTestReminder=${scheduleTestNotification} />`
   if (route.name === 'capture')
     return html`
       <${Home} notes=${store.notes} status=${store.status} onToggle=${store.toggle} onOpen=${openDetail}
-        onCapture=${() => setRoute({ name: 'capture' })} onLibrary=${() => setRoute({ name: 'library' })} />
+        onCapture=${() => setRoute({ name: 'capture' })} onLibrary=${() => setRoute({ name: 'library' })}
+        onTestReminder=${scheduleTestNotification} />
       <${Capture} onSave=${store.addTask} onClose=${() => setRoute({ name: 'home' })} defaultProject=${route.project} />`
   if (route.name === 'library')
     return html`<${Library} notes=${store.notes} onToggle=${store.toggle} onOpen=${openDetail}

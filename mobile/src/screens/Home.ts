@@ -4,9 +4,9 @@ import { TaskRow, BucketChip, PrimaryButton } from '../components'
 import { todayView, bucketCounts, pickSuggestion } from '../tasks'
 import type { NoteRec } from '../notes'
 
-export function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary }:
+export function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary, onTestReminder }:
   { notes: NoteRec[]; status: string; onToggle: (n: NoteRec) => void; onOpen: (n: NoteRec) => void;
-    onCapture: () => void; onLibrary: () => void }) {
+    onCapture: () => void; onLibrary: () => void; onTestReminder?: () => void }) {
   const [suggIdx, setSuggIdx] = useState(0)
   const { visible, overflow } = todayView(notes)
   const counts = bucketCounts(notes)
@@ -18,7 +18,12 @@ export function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary }:
     <div style=${{ minHeight: '100vh', display: 'flex', flexDirection: 'column', gap: '16px', padding: '26px 20px 92px' }}>
       <div style=${{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '0 4px' }}>
         <span style=${{ font: `700 21px ${T.mono}` }}>${day}</span>
-        <span style=${{ font: `400 13px ${T.mono}`, color: T.muted }}>${status}</span>
+        <div style=${{ display: 'flex', alignItems: 'baseline', gap: '10px' }}>
+          ${onTestReminder ? html`
+            <span onClick=${onTestReminder}
+              style=${{ font: `400 12px ${T.mono}`, color: T.muted, cursor: 'pointer', opacity: '.6' }}>🔔</span>` : ''}
+          <span style=${{ font: `400 13px ${T.mono}`, color: T.muted }}>${status}</span>
+        </div>
       </div>
 
       ${sugg ? html`

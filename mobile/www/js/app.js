@@ -653,7 +653,7 @@ function projectsOf(notes) {
 }
 
 // src/screens/Home.ts
-function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary }) {
+function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary, onTestReminder }) {
   const [suggIdx, setSuggIdx] = d2(0);
   const { visible, overflow } = todayView(notes);
   const counts = bucketCounts(notes);
@@ -664,7 +664,12 @@ function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary }) {
     <div style=${{ minHeight: "100vh", display: "flex", flexDirection: "column", gap: "16px", padding: "26px 20px 92px" }}>
       <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 4px" }}>
         <span style=${{ font: `700 21px ${theme.mono}` }}>${day}</span>
-        <span style=${{ font: `400 13px ${theme.mono}`, color: theme.muted }}>${status}</span>
+        <div style=${{ display: "flex", alignItems: "baseline", gap: "10px" }}>
+          ${onTestReminder ? html`
+            <span onClick=${onTestReminder}
+              style=${{ font: `400 12px ${theme.mono}`, color: theme.muted, cursor: "pointer", opacity: ".6" }}>🔔</span>` : ""}
+          <span style=${{ font: `400 13px ${theme.mono}`, color: theme.muted }}>${status}</span>
+        </div>
       </div>
 
       ${sugg ? html`
@@ -898,6 +903,23 @@ function Detail({ note, onUpdate, onBack }) {
     </div>`;
 }
 
+// src/notify.ts
+async function scheduleTestNotification() {
+  const w3 = window;
+  const LN = w3.Capacitor?.Plugins?.LocalNotifications;
+  if (!LN) return;
+  await LN.requestPermissions();
+  await LN.schedule({
+    notifications: [{
+      id: Math.floor(Math.random() * 1e6),
+      title: "Odysseus",
+      body: "Test reminder \u2014 timers will use this.",
+      schedule: { at: new Date(Date.now() + 1e4) }
+      // 10s out; lock the screen to prove it
+    }]
+  });
+}
+
 // src/main.ts
 function Root() {
   const store = useNotesStore();
@@ -916,11 +938,13 @@ function Root() {
   if (route.name === "home")
     return html`<${Home} notes=${store.notes} status=${store.status}
       onToggle=${store.toggle} onOpen=${openDetail}
-      onCapture=${() => setRoute({ name: "capture" })} onLibrary=${() => setRoute({ name: "library" })} />`;
+      onCapture=${() => setRoute({ name: "capture" })} onLibrary=${() => setRoute({ name: "library" })}
+      onTestReminder=${scheduleTestNotification} />`;
   if (route.name === "capture")
     return html`
       <${Home} notes=${store.notes} status=${store.status} onToggle=${store.toggle} onOpen=${openDetail}
-        onCapture=${() => setRoute({ name: "capture" })} onLibrary=${() => setRoute({ name: "library" })} />
+        onCapture=${() => setRoute({ name: "capture" })} onLibrary=${() => setRoute({ name: "library" })}
+        onTestReminder=${scheduleTestNotification} />
       <${Capture} onSave=${store.addTask} onClose=${() => setRoute({ name: "home" })} defaultProject=${route.project} />`;
   if (route.name === "library")
     return html`<${Library} notes=${store.notes} onToggle=${store.toggle} onOpen=${openDetail}
