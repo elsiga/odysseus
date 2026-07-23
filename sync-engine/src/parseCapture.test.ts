@@ -33,4 +33,10 @@ describe('parseCapture', () => {
     expect(r.segments.some(s => s.kind === 'project' && s.text === '@p')).toBe(true)
     expect(r.segments.some(s => s.kind === 'bucket' && s.text === 'today')).toBe(true)
   })
+
+  it('3+ consecutive ! saturates urgency at 2', () => {
+    const r = parseCapture('ship it !!!')
+    expect(r.urgency).toBe(2)
+    expect(r.segments.map(s => s.text).join('')).toBe('ship it !!!')
+  })
 })

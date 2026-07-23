@@ -6447,7 +6447,7 @@ function createSyncClient(opts = {}) {
 }
 
 // src/parseCapture.ts
-var TOKEN = /(@[a-z0-9_-]+)|\b(today|soon|someday)\b|\b(\d{1,2}:\d{2}|\d{1,2}(?:am|pm))\b|(!{1,2})/gi;
+var TOKEN = /(@[a-z0-9_-]+)|\b(today|soon|someday)\b|\b(\d{1,2}:\d{2}|\d{1,2}(?:am|pm))\b|(!+)/gi;
 function parseCapture(text) {
   let project = null;
   let bucket = null;

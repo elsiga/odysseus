@@ -10,7 +10,7 @@ export interface Parsed {
 }
 
 // One combined matcher so segments are produced in source order.
-const TOKEN = /(@[a-z0-9_-]+)|\b(today|soon|someday)\b|\b(\d{1,2}:\d{2}|\d{1,2}(?:am|pm))\b|(!{1,2})/gi
+const TOKEN = /(@[a-z0-9_-]+)|\b(today|soon|someday)\b|\b(\d{1,2}:\d{2}|\d{1,2}(?:am|pm))\b|(!+)/gi
 
 export function parseCapture(text: string): Parsed {
   let project: string | null = null
