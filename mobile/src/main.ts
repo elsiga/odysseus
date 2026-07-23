@@ -1,78 +1,37 @@
-import { html, render, useState, useEffect } from './html'
-import { notesRepo, createSyncClient, API_BASE, type NoteRec } from './notes'
+import { html, render, useState } from './html'
+import { useNotesStore } from './store'
 import { getToken, setToken } from './token'
+import { Home } from './screens/Home'
+import type { NoteRec } from './notes'
 
-function App() {
-  const [notes, setNotes] = useState<NoteRec[]>([])
-  const [token, setTok] = useState<string | null | undefined>(undefined) // undefined = loading
-  const [status, setStatus] = useState('')
-  const [draft, setDraft] = useState('')
-  const clientRef = { current: null as null | ReturnType<typeof createSyncClient> }
+type Route = { name: 'home' } | { name: 'capture' } | { name: 'library' } | { name: 'project'; project: string } | { name: 'detail'; id: string }
 
-  async function refresh() {
-    const all = await notesRepo.list()
-    setNotes(all.filter(n => !n.archived).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)))
-  }
+function Root() {
+  const store = useNotesStore()
+  const [route, setRoute] = useState<Route>({ name: 'home' })
+  const [tok, setTok] = useState<string | null | undefined>(undefined)
 
-  async function boot() {
-    await refresh()                              // local first (offline)
-    const t = await getToken()
-    setTok(t ?? null)
-    if (!t) { setStatus('no token'); return }
-    const client = createSyncClient({ apiBase: API_BASE, authHeader: () => ({ Authorization: `Bearer ${t}` }) })
-    clientRef.current = client
-    client.start(); setStatus('syncing')
-    await client.syncOnce(); await refresh()
-    setStatus(navigator.onLine ? 'synced' : 'offline')
-  }
-  useEffect(() => { void boot() }, [])
+  // token gate
+  useState(() => { void getToken().then(t => setTok(t ?? null)) })
+  if (tok === undefined) return html`<p style="padding:24px">…</p>`
+  if (tok === null) return html`<${TokenGate} onSave=${async (t: string) => { await setToken(t); setTok(t) }} />`
 
-  async function add() {
-    const title = draft.trim(); if (!title) return
-    setDraft('')
-    await notesRepo.create({ title, done: false })
-    await refresh(); void clientRef.current?.syncOnce()
-  }
-  async function toggle(n: NoteRec) {
-    await notesRepo.update(n.id, { done: !n.done }); await refresh(); void clientRef.current?.syncOnce()
-  }
-  async function del(n: NoteRec) {
-    await notesRepo.remove(n.id); await refresh(); void clientRef.current?.syncOnce()
-  }
-  async function saveToken(t: string) {
-    if (!t.startsWith('ody_')) { setStatus('bad token'); return }
-    await setToken(t); await boot()
-  }
-
-  if (token === undefined) return html`<p style="padding:24px">…</p>`
-  if (token === null) return html`<${TokenGate} onSave=${saveToken} status=${status} />`
-
-  return html`
-    <div style="font-family:monospace;padding:16px">
-      <div style="opacity:.6;font-size:11px">${status}</div>
-      ${notes.map(n => html`
-        <div key=${n.id} style="display:flex;gap:10px;padding:10px;border:1px solid #2A3644;border-radius:8px;margin:6px 0">
-          <input type="checkbox" checked=${!!n.done} onChange=${() => toggle(n)} />
-          <span style=${{ flex: 1, textDecoration: n.done ? 'line-through' : 'none' }}>${n.title || '(untitled)'}</span>
-          <button onClick=${() => del(n)}>×</button>
-        </div>`)}
-      <div style="display:flex;gap:8px;margin-top:12px">
-        <input style="flex:1;padding:10px" placeholder="New task…" value=${draft}
-               onInput=${(e: any) => setDraft(e.target.value)}
-               onKeyDown=${(e: any) => { if (e.key === 'Enter') add() }} />
-        <button onClick=${add}>Add</button>
-      </div>
-    </div>`
+  const openDetail = (n: NoteRec) => setRoute({ name: 'detail', id: n.id })
+  if (route.name === 'home')
+    return html`<${Home} notes=${store.notes} status=${store.status}
+      onToggle=${store.toggle} onOpen=${openDetail}
+      onCapture=${() => setRoute({ name: 'capture' })} onLibrary=${() => setRoute({ name: 'library' })} />`
+  return html`<p style="padding:24px">…</p>` // routes filled in Tasks 7-9
 }
 
-function TokenGate({ onSave, status }: { onSave: (t: string) => void; status: string }) {
-  const [t, setT] = useState('')
+function TokenGate({ onSave }: { onSave: (t: string) => void }) {
+  const [t, setT] = useState(''); const [err, setErr] = useState('')
   return html`
-    <div style="font-family:monospace;padding:24px">
+    <div style="padding:24px;font-family:monospace">
       <p>Paste your sync API token (<code>ody_…</code>).</p>
       <textarea style="width:100%;height:80px" value=${t} onInput=${(e: any) => setT(e.target.value)}></textarea>
-      <div><button onClick=${() => onSave(t.trim())}>Save token</button> <span style="opacity:.6">${status}</span></div>
+      <div><button onClick=${() => { const v = t.trim(); if (!v.startsWith('ody_')) return setErr('bad token'); onSave(v) }}>Save token</button> <span style="color:#FF6B5E">${err}</span></div>
     </div>`
 }
 
-render(html`<${App} />`, document.getElementById('root')!)
+render(html`<${Root} />`, document.getElementById('root')!)

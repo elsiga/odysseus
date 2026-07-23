@@ -340,6 +340,15 @@ function h2(n3, u3) {
   var i3 = s2(t3++, 3);
   !c2.__s && C2(i3.__H, u3) && (i3.__ = n3, i3.u = u3, r2.__H.__h.push(i3));
 }
+function A2(n3) {
+  return o2 = 5, T2(function() {
+    return { current: n3 };
+  }, []);
+}
+function T2(n3, r3) {
+  var u3 = s2(t3++, 7);
+  return C2(u3.__H, r3) && (u3.__ = n3(), u3.__H = r3, u3.__h = n3), u3.__;
+}
 function j2() {
   for (var n3; n3 = f2.shift(); ) {
     var t4 = n3.__H;
@@ -438,90 +447,276 @@ async function setToken(token) {
   await p3.set({ key: KEY, value: token });
 }
 
-// src/main.ts
-function App() {
+// src/store.ts
+function useNotesStore() {
   const [notes, setNotes] = d2([]);
-  const [token, setTok] = d2(void 0);
   const [status, setStatus] = d2("");
-  const [draft, setDraft] = d2("");
-  const clientRef = { current: null };
+  const client = A2(null);
   async function refresh() {
     const all = await notesRepo.list();
     setNotes(all.filter((n3) => !n3.archived).sort((a3, b2) => (a3.sort_order ?? 0) - (b2.sort_order ?? 0)));
   }
-  async function boot() {
+  async function syncNow() {
+    await client.current?.syncOnce();
     await refresh();
-    const t4 = await getToken();
-    setTok(t4 ?? null);
-    if (!t4) {
-      setStatus("no token");
-      return;
-    }
-    const client = createSyncClient({ apiBase: API_BASE, authHeader: () => ({ Authorization: `Bearer ${t4}` }) });
-    clientRef.current = client;
-    client.start();
-    setStatus("syncing");
-    await client.syncOnce();
-    await refresh();
-    setStatus(navigator.onLine ? "synced" : "offline");
   }
   h2(() => {
-    void boot();
+    (async () => {
+      await refresh();
+      const t4 = await getToken();
+      if (!t4) {
+        setStatus("no token");
+        return;
+      }
+      const c3 = createSyncClient({ apiBase: API_BASE, authHeader: () => ({ Authorization: `Bearer ${t4}` }) });
+      client.current = c3;
+      c3.start();
+      setStatus("syncing");
+      await c3.syncOnce();
+      await refresh();
+      setStatus(navigator.onLine ? "synced" : "offline");
+    })();
   }, []);
-  async function add() {
-    const title = draft.trim();
-    if (!title) return;
-    setDraft("");
-    await notesRepo.create({ title, done: false });
+  async function addTask(data) {
+    await notesRepo.create({ done: false, bucket: "today", ...data });
     await refresh();
-    void clientRef.current?.syncOnce();
+    void syncNow();
   }
   async function toggle(n3) {
     await notesRepo.update(n3.id, { done: !n3.done });
     await refresh();
-    void clientRef.current?.syncOnce();
+    void syncNow();
   }
-  async function del(n3) {
+  async function update(id, patch) {
+    await notesRepo.update(id, patch);
+    await refresh();
+    void syncNow();
+  }
+  async function remove(n3) {
     await notesRepo.remove(n3.id);
     await refresh();
-    void clientRef.current?.syncOnce();
+    void syncNow();
   }
-  async function saveToken(t4) {
-    if (!t4.startsWith("ody_")) {
-      setStatus("bad token");
-      return;
-    }
-    await setToken(t4);
-    await boot();
-  }
-  if (token === void 0) return html`<p style="padding:24px">…</p>`;
-  if (token === null) return html`<${TokenGate} onSave=${saveToken} status=${status} />`;
+  return { notes, status, refresh, addTask, toggle, remove, update, syncNow };
+}
+
+// src/theme.ts
+var theme = {
+  bg: "#171E28",
+  bg2: "#12181F",
+  card: "#1E2733",
+  card2: "#2A3644",
+  border: "#2A3644",
+  text: "#EFE9E1",
+  text2: "#C9C2D2",
+  muted: "#5C7080",
+  faint: "#3A4A5A",
+  accent: "#FF6B5E",
+  scrim: "rgba(0,0,0,.55)",
+  mono: "'JetBrains Mono',ui-monospace,monospace"
+};
+
+// src/components.ts
+function TaskRow({ note, onToggle, onOpen }) {
+  const done = !!note.done;
   return html`
-    <div style="font-family:monospace;padding:16px">
-      <div style="opacity:.6;font-size:11px">${status}</div>
-      ${notes.map((n3) => html`
-        <div key=${n3.id} style="display:flex;gap:10px;padding:10px;border:1px solid #2A3644;border-radius:8px;margin:6px 0">
-          <input type="checkbox" checked=${!!n3.done} onChange=${() => toggle(n3)} />
-          <span style=${{ flex: 1, textDecoration: n3.done ? "line-through" : "none" }}>${n3.title || "(untitled)"}</span>
-          <button onClick=${() => del(n3)}>×</button>
-        </div>`)}
-      <div style="display:flex;gap:8px;margin-top:12px">
-        <input style="flex:1;padding:10px" placeholder="New task…" value=${draft}
-               onInput=${(e3) => setDraft(e3.target.value)}
-               onKeyDown=${(e3) => {
-    if (e3.key === "Enter") add();
-  }} />
-        <button onClick=${add}>Add</button>
+    <div style=${{
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    padding: "13px 14px",
+    border: `1px solid ${theme.card2}`,
+    borderRadius: "12px",
+    opacity: done ? 0.55 : 1
+  }}>
+      <div onClick=${(e3) => {
+    e3.stopPropagation();
+    onToggle();
+  }}
+           style=${{
+    width: "22px",
+    height: "22px",
+    borderRadius: "50%",
+    border: `2px solid ${done ? theme.accent : "#4A5866"}`,
+    background: done ? theme.accent : "transparent",
+    flex: "none",
+    cursor: "pointer"
+  }}></div>
+      <span onClick=${onOpen} style=${{
+    flex: 1,
+    font: `400 15px ${theme.mono}`,
+    color: done ? theme.muted : theme.text,
+    textDecoration: done ? "line-through" : "none",
+    cursor: onOpen ? "pointer" : "default"
+  }}>${note.title || "(untitled)"}</span>
+      <span style=${{ font: `400 11px ${theme.mono}`, color: theme.muted }}>${note.project ? "#" + note.project : ""}</span>
+    </div>`;
+}
+function BucketChip({ label, selected, onClick }) {
+  return html`
+    <span onClick=${onClick} style=${{
+    padding: "10px 18px",
+    borderRadius: "999px",
+    cursor: onClick ? "pointer" : "default",
+    font: `500 13px ${theme.mono}`,
+    border: `1px solid ${selected ? theme.accent : theme.border}`,
+    background: selected ? "rgba(255,107,94,.12)" : "transparent",
+    color: selected ? theme.accent : theme.muted
+  }}>${label}</span>`;
+}
+function PrimaryButton({ label, onClick, disabled }) {
+  return html`
+    <div onClick=${disabled ? void 0 : onClick}
+      style=${{
+    height: "52px",
+    borderRadius: "12px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    font: `700 17px ${theme.mono}`,
+    cursor: disabled ? "default" : "pointer",
+    background: disabled ? theme.card : theme.accent,
+    color: disabled ? theme.faint : theme.bg
+  }}>${label}</div>`;
+}
+
+// src/tasks.ts
+var BUCKETS = ["today", "soon", "someday"];
+function bucketOf(n3) {
+  const b2 = n3.bucket || "today";
+  return BUCKETS.includes(b2) ? b2 : "today";
+}
+function isActive(n3) {
+  return !n3.archived && !n3.done;
+}
+function activeByBucket(notes) {
+  const out = { today: [], soon: [], someday: [] };
+  for (const n3 of notes) if (isActive(n3)) out[bucketOf(n3)].push(n3);
+  return out;
+}
+function bucketCounts(notes) {
+  const by = activeByBucket(notes);
+  return { today: by.today.length, soon: by.soon.length, someday: by.someday.length };
+}
+function todayView(notes, cap = 5) {
+  const today = activeByBucket(notes).today;
+  return { visible: today.slice(0, cap), overflow: Math.max(0, today.length - cap) };
+}
+function pickSuggestion(notes, idx) {
+  const today = activeByBucket(notes).today;
+  if (today.length === 0) return null;
+  return today[(idx % today.length + today.length) % today.length];
+}
+
+// src/screens/Home.ts
+function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary }) {
+  const [suggIdx, setSuggIdx] = d2(0);
+  const { visible, overflow } = todayView(notes);
+  const counts = bucketCounts(notes);
+  const sugg = pickSuggestion(notes, suggIdx);
+  const now = /* @__PURE__ */ new Date();
+  const day = now.toLocaleDateString("en", { weekday: "long" });
+  return html`
+    <div style=${{ minHeight: "100vh", display: "flex", flexDirection: "column", gap: "16px", padding: "26px 20px 92px" }}>
+      <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 4px" }}>
+        <span style=${{ font: `700 21px ${theme.mono}` }}>${day}</span>
+        <span style=${{ font: `400 13px ${theme.mono}`, color: theme.muted }}>${status}</span>
+      </div>
+
+      ${sugg ? html`
+        <div style=${{
+    background: theme.card,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "18px",
+    padding: "20px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "13px"
+  }}>
+          <span style=${{ font: `600 11px ${theme.mono}`, letterSpacing: ".16em", color: theme.muted }}>WHAT NOW</span>
+          <div style=${{ font: `700 23px ${theme.mono}`, minHeight: "32px" }}>${sugg.title}</div>
+          <${PrimaryButton} label="Start" disabled=${true} />
+          <div onClick=${() => setSuggIdx((i3) => i3 + 1)}
+               style=${{ textAlign: "center", font: `400 13.5px ${theme.mono}`, color: theme.muted, cursor: "pointer", padding: "6px" }}>not this one →</div>
+        </div>` : html`
+        <div style=${{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "12px" }}>
+          <div style=${{ font: `700 22px ${theme.mono}` }}>Today is clear.</div>
+          <div style=${{ font: `400 14px ${theme.mono}`, color: theme.muted, textAlign: "center" }}>Pull something from soon, or enjoy the space.</div>
+        </div>`}
+
+      <div style=${{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
+        ${visible.map((n3) => html`<${TaskRow} key=${n3.id} note=${n3} onToggle=${() => onToggle(n3)} onOpen=${() => onOpen(n3)} />`)}
+        ${overflow > 0 ? html`
+          <div style=${{
+    padding: "13px 16px",
+    borderRadius: "12px",
+    background: "rgba(30,39,51,.7)",
+    border: `1px solid ${theme.border}`,
+    font: `400 13.5px ${theme.mono}`,
+    color: theme.muted
+  }}>
+            ${overflow} more in today — <span style=${{ color: theme.text }}>move some to soon?</span></div>` : ""}
+      </div>
+
+      <div style=${{ display: "flex", gap: "8px", padding: "0 2px" }}>
+        <${BucketChip} label=${`soon \xB7 ${counts.soon}`} onClick=${onLibrary} />
+        <${BucketChip} label=${`someday \xB7 ${counts.someday}`} onClick=${onLibrary} />
+        <${BucketChip} label="projects" onClick=${onLibrary} />
+      </div>
+
+      <div onClick=${onCapture}
+        style=${{
+    position: "fixed",
+    left: "16px",
+    right: "16px",
+    bottom: "16px",
+    height: "54px",
+    borderRadius: "999px",
+    background: theme.card,
+    border: `1px solid ${theme.border}`,
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    padding: "0 20px"
+  }}>
+        <span style=${{ font: `400 20px ${theme.mono}`, color: theme.accent }}>＋</span>
+        <span style=${{ font: `400 15px ${theme.mono}`, color: theme.muted }}>Capture a thought…</span>
       </div>
     </div>`;
 }
-function TokenGate({ onSave, status }) {
+
+// src/main.ts
+function Root() {
+  const store = useNotesStore();
+  const [route, setRoute] = d2({ name: "home" });
+  const [tok, setTok] = d2(void 0);
+  d2(() => {
+    void getToken().then((t4) => setTok(t4 ?? null));
+  });
+  if (tok === void 0) return html`<p style="padding:24px">…</p>`;
+  if (tok === null) return html`<${TokenGate} onSave=${async (t4) => {
+    await setToken(t4);
+    setTok(t4);
+  }} />`;
+  const openDetail = (n3) => setRoute({ name: "detail", id: n3.id });
+  if (route.name === "home")
+    return html`<${Home} notes=${store.notes} status=${store.status}
+      onToggle=${store.toggle} onOpen=${openDetail}
+      onCapture=${() => setRoute({ name: "capture" })} onLibrary=${() => setRoute({ name: "library" })} />`;
+  return html`<p style="padding:24px">…</p>`;
+}
+function TokenGate({ onSave }) {
   const [t4, setT] = d2("");
+  const [err, setErr] = d2("");
   return html`
-    <div style="font-family:monospace;padding:24px">
+    <div style="padding:24px;font-family:monospace">
       <p>Paste your sync API token (<code>ody_…</code>).</p>
       <textarea style="width:100%;height:80px" value=${t4} onInput=${(e3) => setT(e3.target.value)}></textarea>
-      <div><button onClick=${() => onSave(t4.trim())}>Save token</button> <span style="opacity:.6">${status}</span></div>
+      <div><button onClick=${() => {
+    const v3 = t4.trim();
+    if (!v3.startsWith("ody_")) return setErr("bad token");
+    onSave(v3);
+  }}>Save token</button> <span style="color:#FF6B5E">${err}</span></div>
     </div>`;
 }
-R(html`<${App} />`, document.getElementById("root"));
+R(html`<${Root} />`, document.getElementById("root"));
