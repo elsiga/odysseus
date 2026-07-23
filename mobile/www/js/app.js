@@ -460,6 +460,15 @@ function useNotesStore() {
     await client.current?.syncOnce();
     await refresh();
   }
+  async function startSync(t4) {
+    const c3 = createSyncClient({ apiBase: API_BASE, authHeader: () => ({ Authorization: `Bearer ${t4}` }) });
+    client.current = c3;
+    c3.start();
+    setStatus("syncing");
+    await c3.syncOnce();
+    await refresh();
+    setStatus(navigator.onLine ? "synced" : "offline");
+  }
   h2(() => {
     (async () => {
       await refresh();
@@ -468,13 +477,7 @@ function useNotesStore() {
         setStatus("no token");
         return;
       }
-      const c3 = createSyncClient({ apiBase: API_BASE, authHeader: () => ({ Authorization: `Bearer ${t4}` }) });
-      client.current = c3;
-      c3.start();
-      setStatus("syncing");
-      await c3.syncOnce();
-      await refresh();
-      setStatus(navigator.onLine ? "synced" : "offline");
+      await startSync(t4);
     })();
   }, []);
   async function addTask(data) {
@@ -497,7 +500,7 @@ function useNotesStore() {
     await refresh();
     void syncNow();
   }
-  return { notes, status, refresh, addTask, toggle, remove, update, syncNow };
+  return { notes, status, refresh, addTask, toggle, remove, update, syncNow, startSync };
 }
 
 // src/theme.ts
@@ -697,6 +700,7 @@ function Root() {
   if (tok === null) return html`<${TokenGate} onSave=${async (t4) => {
     await setToken(t4);
     setTok(t4);
+    await store.startSync(t4);
   }} />`;
   const openDetail = (n3) => setRoute({ name: "detail", id: n3.id });
   if (route.name === "home")

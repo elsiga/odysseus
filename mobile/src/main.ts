@@ -14,7 +14,7 @@ function Root() {
   // token gate
   useState(() => { void getToken().then(t => setTok(t ?? null)) })
   if (tok === undefined) return html`<p style="padding:24px">…</p>`
-  if (tok === null) return html`<${TokenGate} onSave=${async (t: string) => { await setToken(t); setTok(t) }} />`
+  if (tok === null) return html`<${TokenGate} onSave=${async (t: string) => { await setToken(t); setTok(t); await store.startSync(t) }} />`
 
   const openDetail = (n: NoteRec) => setRoute({ name: 'detail', id: n.id })
   if (route.name === 'home')

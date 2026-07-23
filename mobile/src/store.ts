@@ -13,12 +13,16 @@ export function useNotesStore() {
   }
   async function syncNow() { await client.current?.syncOnce(); await refresh() }
 
-  useEffect(() => { (async () => {
-    await refresh()
-    const t = await getToken(); if (!t) { setStatus('no token'); return }
+  async function startSync(t: string) {
     const c = createSyncClient({ apiBase: API_BASE, authHeader: () => ({ Authorization: `Bearer ${t}` }) })
     client.current = c; c.start(); setStatus('syncing')
     await c.syncOnce(); await refresh(); setStatus(navigator.onLine ? 'synced' : 'offline')
+  }
+
+  useEffect(() => { (async () => {
+    await refresh()
+    const t = await getToken(); if (!t) { setStatus('no token'); return }
+    await startSync(t)
   })() }, [])
 
   async function addTask(data: Partial<NoteRec>) { await notesRepo.create({ done: false, bucket: 'today', ...data }); await refresh(); void syncNow() }
@@ -26,5 +30,5 @@ export function useNotesStore() {
   async function update(id: string, patch: Partial<NoteRec>) { await notesRepo.update(id, patch); await refresh(); void syncNow() }
   async function remove(n: NoteRec) { await notesRepo.remove(n.id); await refresh(); void syncNow() }
 
-  return { notes, status, refresh, addTask, toggle, remove, update, syncNow }
+  return { notes, status, refresh, addTask, toggle, remove, update, syncNow, startSync }
 }
