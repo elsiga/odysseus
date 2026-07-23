@@ -1,4 +1,4 @@
-import { html, render, useState } from './html'
+import { html, render, useState, useRef } from './html'
 import { useNotesStore } from './store'
 import { getToken, setToken } from './token'
 import { Home } from './screens/Home'
@@ -7,48 +7,63 @@ import { Library } from './screens/Library'
 import { Project } from './screens/Project'
 import { Detail } from './screens/Detail'
 import { scheduleTestNotification } from './notify'
+import { pushRoute, popRoute, shouldExit, type Route } from './nav'
+import { useBackButton, exitApp } from './backButton'
 import type { NoteRec } from './notes'
-
-type Route = { name: 'home' } | { name: 'capture'; project?: string } | { name: 'library' }
-  | { name: 'project'; project: string } | { name: 'detail'; id: string }
 
 function Root() {
   const store = useNotesStore()
-  const [route, setRoute] = useState<Route>({ name: 'home' })
+  const [stack, setStack] = useState<Route[]>([{ name: 'home' }])
   const [tok, setTok] = useState<string | null | undefined>(undefined)
+  const lastBackAt = useRef(0)
+
+  const route = stack[stack.length - 1]
+  const navigate = (r: Route) => setStack(s => pushRoute(s, r))
+
+  // Back: pop one entry, or at the root require a second press within
+  // EXIT_WINDOW_MS to exit. No toast, by design decision.
+  function back() {
+    if (stack.length > 1) { setStack(s => popRoute(s)); return }
+    const now = Date.now()
+    if (shouldExit(lastBackAt.current, now)) { exitApp(); return }
+    lastBackAt.current = now
+  }
+  // Registered before any conditional return so hook order stays stable.
+  useBackButton(back)
 
   // token gate
   useState(() => { void getToken().then(t => setTok(t ?? null)) })
   if (tok === undefined) return html`<p style="padding:24px">…</p>`
   if (tok === null) return html`<${TokenGate} onSave=${async (t: string) => { await setToken(t); setTok(t); await store.startSync(t) }} />`
 
-  const openDetail = (n: NoteRec) => setRoute({ name: 'detail', id: n.id })
+  const openDetail = (n: NoteRec) => navigate({ name: 'detail', id: n.id })
   if (route.name === 'home')
     return html`<${Home} notes=${store.notes} status=${store.status}
       onToggle=${store.toggle} onOpen=${openDetail}
-      onCapture=${() => setRoute({ name: 'capture' })} onLibrary=${() => setRoute({ name: 'library' })}
+      onCapture=${() => navigate({ name: 'capture' })} onLibrary=${() => navigate({ name: 'library' })}
       onTestReminder=${scheduleTestNotification} />`
   if (route.name === 'capture')
     return html`
       <${Home} notes=${store.notes} status=${store.status} onToggle=${store.toggle} onOpen=${openDetail}
-        onCapture=${() => setRoute({ name: 'capture' })} onLibrary=${() => setRoute({ name: 'library' })}
+        onCapture=${() => navigate({ name: 'capture' })} onLibrary=${() => navigate({ name: 'library' })}
         onTestReminder=${scheduleTestNotification} />
-      <${Capture} onSave=${store.addTask} onClose=${() => setRoute({ name: 'home' })} defaultProject=${route.project} />`
+      <${Capture} onSave=${store.addTask} onClose=${back} defaultProject=${route.project} />`
   if (route.name === 'library')
     return html`<${Library} notes=${store.notes} onToggle=${store.toggle} onOpen=${openDetail}
-      onOpenProject=${(name: string) => setRoute({ name: 'project', project: name })}
-      onBack=${() => setRoute({ name: 'home' })} />`
+      onOpenProject=${(name: string) => navigate({ name: 'project', project: name })} />`
   if (route.name === 'project') {
     const p = route.project
     return html`<${Project} project=${p} notes=${store.notes} onToggle=${store.toggle} onOpen=${openDetail}
-      onCapture=${() => setRoute({ name: 'capture', project: p } as any)} onBack=${() => setRoute({ name: 'library' })} />`
+      onCapture=${() => navigate({ name: 'capture', project: p })} />`
   }
   if (route.name === 'detail') {
     const n = store.notes.find(x => x.id === route.id)
-    if (!n) { setRoute({ name: 'home' }); return html`` }
-    return html`<${Detail} note=${n} onUpdate=${(patch: any) => store.update(n.id, patch)} onBack=${() => setRoute({ name: 'home' })} />`
+    // Render a fallback rather than calling setState during render. Hardware
+    // back pops this entry.
+    if (!n) return html`<p style="padding:26px 20px">task not found — press back</p>`
+    return html`<${Detail} note=${n} onUpdate=${(patch: any) => store.update(n.id, patch)} />`
   }
-  return html`<p style="padding:24px">…</p>` // routes filled in Tasks 7-9
+  return html`<p style="padding:24px">…</p>`
 }
 
 function TokenGate({ onSave }: { onSave: (t: string) => void }) {

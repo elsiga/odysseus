@@ -4,9 +4,9 @@ import { TaskRow, ProjectTag } from '../components'
 import { activeByBucket, projectsOf, type Bucket } from '../tasks'
 import type { NoteRec } from '../notes'
 
-export function Library({ notes, onToggle, onOpen, onOpenProject, onBack }:
+export function Library({ notes, onToggle, onOpen, onOpenProject }:
   { notes: NoteRec[]; onToggle: (n: NoteRec) => void; onOpen: (n: NoteRec) => void;
-    onOpenProject: (name: string) => void; onBack: () => void }) {
+    onOpenProject: (name: string) => void }) {
   const by = activeByBucket(notes)
   const projects = projectsOf(notes)
   const section = (label: string, rows: NoteRec[]) => html`
@@ -20,7 +20,6 @@ export function Library({ notes, onToggle, onOpen, onOpenProject, onBack }:
     <div style=${{ minHeight: '100vh', display: 'flex', flexDirection: 'column', gap: '18px', padding: '26px 20px' }}>
       <div style=${{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '0 4px' }}>
         <span style=${{ font: `700 21px ${T.mono}` }}>Library</span>
-        <span onClick=${onBack} style=${{ font: `400 13px ${T.mono}`, color: T.muted, cursor: 'pointer' }}>← home</span>
       </div>
       ${(['today', 'soon', 'someday'] as Bucket[]).map(b => section(b, by[b]))}
       <div style=${{ display: 'flex', flexDirection: 'column', gap: '10px' }}>

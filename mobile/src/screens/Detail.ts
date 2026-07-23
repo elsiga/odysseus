@@ -3,8 +3,8 @@ import { theme as T } from '../theme'
 import { nextNoteType, nextRid, toRows, toItems, type Row } from '../subtasks'
 import type { NoteRec } from '../notes'
 
-export function Detail({ note, onUpdate, onBack }:
-  { note: NoteRec; onUpdate: (patch: Partial<NoteRec>) => void; onBack: () => void }) {
+export function Detail({ note, onUpdate }:
+  { note: NoteRec; onUpdate: (patch: Partial<NoteRec>) => void }) {
   const [title, setTitle] = useState(note.title || '')
   const [desc, setDesc] = useState(note.content || '')
   const [rows, setRows] = useState<Row[]>(toRows(note.items || []))
@@ -33,7 +33,6 @@ export function Detail({ note, onUpdate, onBack }:
         <input value=${title} onInput=${(e: any) => setTitle(e.target.value)} onBlur=${saveTitle}
           placeholder="Task title"
           style=${{ flex: 1, minWidth: 0, background: 'transparent', border: 'none', font: `700 20px ${T.mono}`, color: T.text }} />
-        <span onClick=${onBack} style=${{ font: `400 13px ${T.mono}`, color: T.muted, cursor: 'pointer', marginLeft: '12px', flex: 'none' }}>← back</span>
       </div>
 
       <textarea value=${desc} onInput=${(e: any) => setDesc(e.target.value)} onBlur=${saveDesc}
