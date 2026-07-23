@@ -115,3 +115,49 @@ web renders descriptions only for `goal` notes (`static/js/notes.js:1800,1834`);
 Nothing is lost (the web save path omits `content` for checklist notes, so the backend
 never clears it), it's just not surfaced there yet. Fixing that is deferred to the
 end-stage web task-field slice.
+
+## Android back navigation
+
+Hardware back now pops the in-app navigation stack (`mobile/src/nav.ts`) instead of
+closing the app: task → project → library → home, one screen at a time. On Home, back
+is a no-op unless pressed twice within 2s (silent double-press to exit; no toast, by
+design — pressing once and waiting does not exit). The on-screen `← back`/`← home`
+affordances on Library/Project/Detail were removed since the hardware button replaces
+them.
+
+This depends on `@capacitor/app`, which must be linked into the Android project by
+`npx cap sync android` — presence in `package.json` alone does not register it. Verified
+this session:
+```
+cd mobile && grep -n "capacitor-app" android/capacitor.settings.gradle && \
+  grep -n "@capacitor/app" android/app/src/main/assets/capacitor.plugins.json
+```
+```
+5:include ':capacitor-app'
+6:project(':capacitor-app').projectDir = new File('../node_modules/@capacitor/app/android')
+3:		"pkg": "@capacitor/app",
+```
+(`capacitor.plugins.json`'s `@capacitor/app` entry carries classpath
+`com.capacitorjs.plugins.app.AppPlugin`.) `npx cap sync android` reported all three
+plugins found (`@capacitor/app`, `@capacitor/local-notifications`, `@capacitor/preferences`).
+
+Build command (unchanged):
+```
+bash mobile/build-apk.sh        # runs: npm install → cp sync-core.js → node build.mjs → cap sync android → gradlew assembleDebug → dist/odysseus.apk
+```
+Verified this session:
+- `node build.mjs` → `built www/js/app.js` clean (no diff vs. the committed bundle).
+- `gradlew assembleDebug` → `BUILD SUCCESSFUL`; `APK → dist/odysseus.apk (3.9M)`.
+- Bundle packaged into the APK: `unzip -l dist/odysseus.apk` shows
+  `assets/public/index.html`, `assets/public/js/app.js`,
+  `assets/public/js/sync-core.js` all present.
+
+### On-device proof — PENDING (manual, requires a physical/emulated device; none attached to this build box)
+1. `adb install -r dist/odysseus.apk`, open the app.
+2. Home → Library → open a project → open a task. Press back three times: it should
+   retrace **task → project → library → home**, NOT jump to Home.
+3. On Home, press back once: nothing happens. Press back again within 2 seconds: the
+   app exits.
+4. On Home, press back once, wait 3 seconds, press once more: the app does NOT exit
+   (the window lapsed).
+5. Open the capture sheet, press back: the sheet closes and Home remains.
