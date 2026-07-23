@@ -851,25 +851,63 @@ function Project({ project, notes, onToggle, onOpen, onCapture, onBack }) {
     </div>`;
 }
 
+// src/subtasks.ts
+function deriveNoteType(items) {
+  return items.length > 0 ? "checklist" : "note";
+}
+
 // src/screens/Detail.ts
+var _uid = 0;
+var toRows = (items) => items.map((s3) => ({ id: ++_uid, text: s3.text, done: !!s3.done }));
+var toItems = (rows) => rows.map(({ text, done }) => ({ text, done }));
 function Detail({ note, onUpdate, onBack }) {
-  const [steps, setSteps] = d2(note.items || []);
-  function commit(next) {
-    setSteps(next);
-    onUpdate({ items: next });
+  const [title, setTitle] = d2(note.title || "");
+  const [desc, setDesc] = d2(note.content || "");
+  const [rows, setRows] = d2(toRows(note.items || []));
+  function persist(next) {
+    const items = toItems(next);
+    onUpdate({ items, note_type: deriveNoteType(items) });
   }
-  const edit = (i3, text) => commit(steps.map((s3, j3) => j3 === i3 ? { ...s3, text } : s3));
-  const remove = (i3) => commit(steps.filter((_2, j3) => j3 !== i3));
-  const add = () => commit([...steps, { text: "", done: false }]);
+  function setAndPersist(next) {
+    setRows(next);
+    persist(next);
+  }
+  const toggle = (id) => setAndPersist(rows.map((r3) => r3.id === id ? { ...r3, done: !r3.done } : r3));
+  const remove = (id) => setAndPersist(rows.filter((r3) => r3.id !== id));
+  const add = () => setAndPersist([...rows, { id: ++_uid, text: "", done: false }]);
+  const editLocal = (id, text) => setRows(rows.map((r3) => r3.id === id ? { ...r3, text } : r3));
+  const saveTitle = () => {
+    const t4 = title.trim();
+    if (t4 !== (note.title || "")) onUpdate({ title: t4 });
+  };
+  const saveDesc = () => {
+    if (desc !== (note.content || "")) onUpdate({ content: desc });
+  };
   return html`
     <div style=${{ minHeight: "100vh", display: "flex", flexDirection: "column", gap: "16px", padding: "26px 20px" }}>
-      <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 4px" }}>
-        <span style=${{ font: `700 20px ${theme.mono}` }}>${note.title || "(untitled)"}</span>
-        <span onClick=${onBack} style=${{ font: `400 13px ${theme.mono}`, color: theme.muted, cursor: "pointer" }}>← back</span>
+      <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0 4px" }}>
+        <input value=${title} onInput=${(e3) => setTitle(e3.target.value)} onBlur=${saveTitle}
+          placeholder="Task title"
+          style=${{ flex: 1, minWidth: 0, background: "transparent", border: "none", font: `700 20px ${theme.mono}`, color: theme.text }} />
+        <span onClick=${onBack} style=${{ font: `400 13px ${theme.mono}`, color: theme.muted, cursor: "pointer", marginLeft: "12px", flex: "none" }}>← back</span>
       </div>
+
+      <textarea value=${desc} onInput=${(e3) => setDesc(e3.target.value)} onBlur=${saveDesc}
+        placeholder="Add a description…" rows=${3}
+        style=${{
+    background: theme.bg2,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "12px",
+    padding: "14px",
+    font: `400 14px ${theme.mono}`,
+    color: theme.text2,
+    resize: "vertical",
+    width: "100%"
+  }}></textarea>
+
       <div style=${{ font: `400 13px ${theme.mono}`, color: theme.muted, padding: "0 4px" }}>break it down</div>
-      ${steps.map((s3, i3) => html`
-        <div key=${i3} style=${{
+      ${rows.map((r3) => html`
+        <div key=${r3.id} style=${{
     display: "flex",
     alignItems: "center",
     gap: "12px",
@@ -878,10 +916,28 @@ function Detail({ note, onUpdate, onBack }) {
     border: `1px solid ${theme.border}`,
     borderRadius: "12px"
   }}>
-          <span style=${{ font: `500 13px ${theme.mono}`, color: theme.accent, width: "16px" }}>${i3 + 1}</span>
-          <input value=${s3.text} onInput=${(e3) => edit(i3, e3.target.value)}
-            style=${{ flex: 1, background: "transparent", border: "none", font: `400 15px ${theme.mono}`, color: theme.text, padding: "10px 0" }} />
-          <span onClick=${() => remove(i3)} style=${{
+          <div onClick=${() => toggle(r3.id)} style=${{
+    width: "20px",
+    height: "20px",
+    borderRadius: "6px",
+    flex: "none",
+    cursor: "pointer",
+    border: `2px solid ${r3.done ? theme.accent : "#4A5866"}`,
+    background: r3.done ? theme.accent : "transparent"
+  }}></div>
+          <input value=${r3.text} onInput=${(e3) => editLocal(r3.id, e3.target.value)} onBlur=${() => persist(rows)}
+            placeholder="Subtask"
+            style=${{
+    flex: 1,
+    minWidth: 0,
+    background: "transparent",
+    border: "none",
+    font: `400 15px ${theme.mono}`,
+    color: r3.done ? theme.muted : theme.text,
+    textDecoration: r3.done ? "line-through" : "none",
+    padding: "10px 0"
+  }} />
+          <span onClick=${() => remove(r3.id)} style=${{
     width: "44px",
     height: "44px",
     display: "flex",
@@ -889,7 +945,8 @@ function Detail({ note, onUpdate, onBack }) {
     justifyContent: "center",
     color: theme.muted,
     cursor: "pointer",
-    font: `400 18px ${theme.mono}`
+    font: `400 18px ${theme.mono}`,
+    flex: "none"
   }}>×</span>
         </div>`)}
       <div onClick=${add} style=${{
@@ -899,7 +956,7 @@ function Detail({ note, onUpdate, onBack }) {
     font: `400 14px ${theme.mono}`,
     color: theme.muted,
     cursor: "pointer"
-  }}>＋ add a step</div>
+  }}>＋ add a subtask</div>
     </div>`;
 }
 
