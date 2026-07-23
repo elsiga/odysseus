@@ -2,6 +2,7 @@ import { html, render, useState } from './html'
 import { useNotesStore } from './store'
 import { getToken, setToken } from './token'
 import { Home } from './screens/Home'
+import { Capture } from './screens/Capture'
 import type { NoteRec } from './notes'
 
 type Route = { name: 'home' } | { name: 'capture' } | { name: 'library' } | { name: 'project'; project: string } | { name: 'detail'; id: string }
@@ -21,6 +22,11 @@ function Root() {
     return html`<${Home} notes=${store.notes} status=${store.status}
       onToggle=${store.toggle} onOpen=${openDetail}
       onCapture=${() => setRoute({ name: 'capture' })} onLibrary=${() => setRoute({ name: 'library' })} />`
+  if (route.name === 'capture')
+    return html`
+      <${Home} notes=${store.notes} status=${store.status} onToggle=${store.toggle} onOpen=${openDetail}
+        onCapture=${() => setRoute({ name: 'capture' })} onLibrary=${() => setRoute({ name: 'library' })} />
+      <${Capture} onSave=${store.addTask} onClose=${() => setRoute({ name: 'home' })} />`
   return html`<p style="padding:24px">…</p>` // routes filled in Tasks 7-9
 }
 

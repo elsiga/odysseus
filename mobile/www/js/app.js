@@ -582,6 +582,29 @@ function PrimaryButton({ label, onClick, disabled }) {
     color: disabled ? theme.faint : theme.bg
   }}>${label}</div>`;
 }
+function BottomSheet({ children, onClose }) {
+  return html`
+    <div style=${{ position: "fixed", inset: 0, zIndex: 10 }}>
+      <div onClick=${onClose} style=${{ position: "absolute", inset: 0, background: theme.scrim }}></div>
+      <div style=${{
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: theme.card,
+    border: `1px solid ${theme.border}`,
+    borderBottom: "none",
+    borderRadius: "24px 24px 0 0",
+    padding: "14px 20px 26px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "14px"
+  }}>
+        <div style=${{ width: "36px", height: "4px", borderRadius: "2px", background: theme.border, margin: "0 auto" }}></div>
+        ${children}
+      </div>
+    </div>`;
+}
 
 // src/tasks.ts
 var BUCKETS = ["today", "soon", "someday"];
@@ -688,6 +711,75 @@ function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary }) {
     </div>`;
 }
 
+// src/screens/Capture.ts
+var SEG_COLOR = {
+  text: theme.text,
+  project: theme.accent,
+  bucket: "#7FB3FF",
+  time: "#8FD69A",
+  urgency: "#FFC15E"
+};
+function Capture({ onSave, onClose, defaultProject }) {
+  const [text, setText] = d2("");
+  const [bucketOverride, setBucketOverride] = d2(null);
+  const parsed = parseCapture(text);
+  const bucket = bucketOverride || parsed.bucket || "today";
+  const canSave = parsed.title.length > 0;
+  async function save() {
+    if (!canSave) return;
+    await onSave({
+      title: parsed.title,
+      bucket,
+      urgency: parsed.urgency,
+      project: parsed.project || defaultProject || null,
+      due_date: parsed.dueTime
+    });
+    onClose();
+  }
+  return html`
+    <${BottomSheet} onClose=${onClose}>
+      ${defaultProject ? html`<div style=${{
+    alignSelf: "flex-start",
+    padding: "5px 12px",
+    borderRadius: "999px",
+    background: theme.bg2,
+    border: `1px solid ${theme.border}`,
+    font: `400 12px ${theme.mono}`,
+    color: theme.text2
+  }}>＃ ${defaultProject}</div>` : ""}
+      <div style=${{ position: "relative", background: theme.bg2, border: `1px solid ${theme.border}`, borderRadius: "12px" }}>
+        <div style=${{
+    position: "absolute",
+    inset: 0,
+    padding: "16px",
+    font: `400 17px ${theme.mono}`,
+    whiteSpace: "pre-wrap",
+    pointerEvents: "none",
+    lineHeight: 1.35
+  }}>
+          ${parsed.segments.map((g2, i3) => html`<span key=${i3} style=${{ color: SEG_COLOR[g2.kind] }}>${g2.text}</span>`)}
+        </div>
+        <input value=${text} onInput=${(e3) => setText(e3.target.value)} placeholder="What's on your mind?"
+          autofocus style=${{
+    position: "relative",
+    background: "transparent",
+    border: "none",
+    padding: "16px",
+    font: `400 17px ${theme.mono}`,
+    lineHeight: 1.35,
+    color: text ? "transparent" : theme.muted,
+    caretColor: theme.text,
+    width: "100%"
+  }} />
+      </div>
+      <div style=${{ font: `400 11.5px ${theme.mono}`, color: theme.faint }}>try: pay rent @flat today 9pm !!</div>
+      <div style=${{ display: "flex", gap: "8px" }}>
+        ${["today", "soon", "someday"].map((b2) => html`<${BucketChip} key=${b2} label=${b2} selected=${bucket === b2} onClick=${() => setBucketOverride(b2)} />`)}
+      </div>
+      <${PrimaryButton} label="Save" disabled=${!canSave} onClick=${save} />
+    </${BottomSheet}>`;
+}
+
 // src/main.ts
 function Root() {
   const store = useNotesStore();
@@ -707,6 +799,11 @@ function Root() {
     return html`<${Home} notes=${store.notes} status=${store.status}
       onToggle=${store.toggle} onOpen=${openDetail}
       onCapture=${() => setRoute({ name: "capture" })} onLibrary=${() => setRoute({ name: "library" })} />`;
+  if (route.name === "capture")
+    return html`
+      <${Home} notes=${store.notes} status=${store.status} onToggle=${store.toggle} onOpen=${openDetail}
+        onCapture=${() => setRoute({ name: "capture" })} onLibrary=${() => setRoute({ name: "library" })} />
+      <${Capture} onSave=${store.addTask} onClose=${() => setRoute({ name: "home" })} />`;
   return html`<p style="padding:24px">…</p>`;
 }
 function TokenGate({ onSave }) {
