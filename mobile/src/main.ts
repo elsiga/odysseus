@@ -4,9 +4,12 @@ import { getToken, setToken } from './token'
 import { Home } from './screens/Home'
 import { Capture } from './screens/Capture'
 import { Library } from './screens/Library'
+import { Project } from './screens/Project'
+import { Detail } from './screens/Detail'
 import type { NoteRec } from './notes'
 
-type Route = { name: 'home' } | { name: 'capture' } | { name: 'library' } | { name: 'project'; project: string } | { name: 'detail'; id: string }
+type Route = { name: 'home' } | { name: 'capture'; project?: string } | { name: 'library' }
+  | { name: 'project'; project: string } | { name: 'detail'; id: string }
 
 function Root() {
   const store = useNotesStore()
@@ -27,11 +30,21 @@ function Root() {
     return html`
       <${Home} notes=${store.notes} status=${store.status} onToggle=${store.toggle} onOpen=${openDetail}
         onCapture=${() => setRoute({ name: 'capture' })} onLibrary=${() => setRoute({ name: 'library' })} />
-      <${Capture} onSave=${store.addTask} onClose=${() => setRoute({ name: 'home' })} />`
+      <${Capture} onSave=${store.addTask} onClose=${() => setRoute({ name: 'home' })} defaultProject=${route.project} />`
   if (route.name === 'library')
     return html`<${Library} notes=${store.notes} onToggle=${store.toggle} onOpen=${openDetail}
       onOpenProject=${(name: string) => setRoute({ name: 'project', project: name })}
       onBack=${() => setRoute({ name: 'home' })} />`
+  if (route.name === 'project') {
+    const p = route.project
+    return html`<${Project} project=${p} notes=${store.notes} onToggle=${store.toggle} onOpen=${openDetail}
+      onCapture=${() => setRoute({ name: 'capture', project: p } as any)} onBack=${() => setRoute({ name: 'library' })} />`
+  }
+  if (route.name === 'detail') {
+    const n = store.notes.find(x => x.id === route.id)
+    if (!n) { setRoute({ name: 'home' }); return html`` }
+    return html`<${Detail} note=${n} onUpdate=${(patch: any) => store.update(n.id, patch)} onBack=${() => setRoute({ name: 'home' })} />`
+  }
   return html`<p style="padding:24px">…</p>` // routes filled in Tasks 7-9
 }
 

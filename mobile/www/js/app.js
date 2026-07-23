@@ -825,6 +825,79 @@ function Library({ notes, onToggle, onOpen, onOpenProject, onBack }) {
     </div>`;
 }
 
+// src/screens/Project.ts
+function Project({ project, notes, onToggle, onOpen, onCapture, onBack }) {
+  const rows = notes.filter((n3) => n3.project === project && !n3.archived && !n3.done);
+  return html`
+    <div style=${{ minHeight: "100vh", display: "flex", flexDirection: "column", gap: "16px", padding: "26px 20px" }}>
+      <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 4px" }}>
+        <span style=${{ font: `700 21px ${theme.mono}` }}>#${project}</span>
+        <span onClick=${onBack} style=${{ font: `400 13px ${theme.mono}`, color: theme.muted, cursor: "pointer" }}>← back</span>
+      </div>
+      ${rows.map((n3) => html`<${TaskRow} key=${n3.id} note=${n3} onToggle=${() => onToggle(n3)} onOpen=${() => onOpen(n3)} />`)}
+      <div onClick=${onCapture} style=${{
+    padding: "14px 16px",
+    border: `1px dashed ${theme.border}`,
+    borderRadius: "14px",
+    font: `400 14px ${theme.mono}`,
+    color: theme.muted,
+    cursor: "pointer"
+  }}>＋ add a task to this project</div>
+    </div>`;
+}
+
+// src/screens/Detail.ts
+function Detail({ note, onUpdate, onBack }) {
+  const [steps, setSteps] = d2(note.items || []);
+  function commit(next) {
+    setSteps(next);
+    onUpdate({ items: next });
+  }
+  const edit = (i3, text) => commit(steps.map((s3, j3) => j3 === i3 ? { ...s3, text } : s3));
+  const remove = (i3) => commit(steps.filter((_2, j3) => j3 !== i3));
+  const add = () => commit([...steps, { text: "", done: false }]);
+  return html`
+    <div style=${{ minHeight: "100vh", display: "flex", flexDirection: "column", gap: "16px", padding: "26px 20px" }}>
+      <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 4px" }}>
+        <span style=${{ font: `700 20px ${theme.mono}` }}>${note.title || "(untitled)"}</span>
+        <span onClick=${onBack} style=${{ font: `400 13px ${theme.mono}`, color: theme.muted, cursor: "pointer" }}>← back</span>
+      </div>
+      <div style=${{ font: `400 13px ${theme.mono}`, color: theme.muted, padding: "0 4px" }}>break it down</div>
+      ${steps.map((s3, i3) => html`
+        <div key=${i3} style=${{
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    padding: "6px 6px 6px 14px",
+    background: theme.card,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "12px"
+  }}>
+          <span style=${{ font: `500 13px ${theme.mono}`, color: theme.accent, width: "16px" }}>${i3 + 1}</span>
+          <input value=${s3.text} onInput=${(e3) => edit(i3, e3.target.value)}
+            style=${{ flex: 1, background: "transparent", border: "none", font: `400 15px ${theme.mono}`, color: theme.text, padding: "10px 0" }} />
+          <span onClick=${() => remove(i3)} style=${{
+    width: "44px",
+    height: "44px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: theme.muted,
+    cursor: "pointer",
+    font: `400 18px ${theme.mono}`
+  }}>×</span>
+        </div>`)}
+      <div onClick=${add} style=${{
+    padding: "13px 14px",
+    border: `1px dashed ${theme.border}`,
+    borderRadius: "12px",
+    font: `400 14px ${theme.mono}`,
+    color: theme.muted,
+    cursor: "pointer"
+  }}>＋ add a step</div>
+    </div>`;
+}
+
 // src/main.ts
 function Root() {
   const store = useNotesStore();
@@ -848,11 +921,24 @@ function Root() {
     return html`
       <${Home} notes=${store.notes} status=${store.status} onToggle=${store.toggle} onOpen=${openDetail}
         onCapture=${() => setRoute({ name: "capture" })} onLibrary=${() => setRoute({ name: "library" })} />
-      <${Capture} onSave=${store.addTask} onClose=${() => setRoute({ name: "home" })} />`;
+      <${Capture} onSave=${store.addTask} onClose=${() => setRoute({ name: "home" })} defaultProject=${route.project} />`;
   if (route.name === "library")
     return html`<${Library} notes=${store.notes} onToggle=${store.toggle} onOpen=${openDetail}
       onOpenProject=${(name) => setRoute({ name: "project", project: name })}
       onBack=${() => setRoute({ name: "home" })} />`;
+  if (route.name === "project") {
+    const p3 = route.project;
+    return html`<${Project} project=${p3} notes=${store.notes} onToggle=${store.toggle} onOpen=${openDetail}
+      onCapture=${() => setRoute({ name: "capture", project: p3 })} onBack=${() => setRoute({ name: "library" })} />`;
+  }
+  if (route.name === "detail") {
+    const n3 = store.notes.find((x2) => x2.id === route.id);
+    if (!n3) {
+      setRoute({ name: "home" });
+      return html``;
+    }
+    return html`<${Detail} note=${n3} onUpdate=${(patch) => store.update(n3.id, patch)} onBack=${() => setRoute({ name: "home" })} />`;
+  }
   return html`<p style="padding:24px">…</p>`;
 }
 function TokenGate({ onSave }) {
