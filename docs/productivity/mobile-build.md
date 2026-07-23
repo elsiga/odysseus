@@ -122,8 +122,10 @@ Hardware back now pops the in-app navigation stack (`mobile/src/nav.ts`) instead
 closing the app: task → project → library → home, one screen at a time. On Home, back
 is a no-op unless pressed twice within 2s (silent double-press to exit; no toast, by
 design — pressing once and waiting does not exit). The on-screen `← back`/`← home`
-affordances on Library/Project/Detail were removed since the hardware button replaces
-them.
+affordances on Library/Project/Detail were removed: they exist in the prototype only
+because a static mock has no hardware back to rely on, so they are mock scaffolding
+rather than a design element. Removing them follows the prototype's intent — do not
+"restore them to match the design file".
 
 This depends on `@capacitor/app`, which must be linked into the Android project by
 `npx cap sync android` — presence in `package.json` alone does not register it. Verified
