@@ -68,8 +68,7 @@ from `main.ts`'s `Root` → `Home`. It calls `window.Capacitor.Plugins.LocalNoti
 directly (no-op if the plugin/bridge is unavailable, e.g. in a desktop browser), requests
 permission, and schedules a one-shot notification 10s out.
 
-### On-device proof — PENDING (manual, requires a physical/emulated device; none attached
-### to this build box)
+### On-device proof — PENDING (manual, requires a physical/emulated device; none attached to this build box)
 1. `adb install -r dist/odysseus.apk`, open the app, paste an `ody_` token (`mobile_sync` profile).
 2. **Todo:** capture a task (`pay rent @flat today 9pm !!`) → appears in today with `#flat`,
    project tag in Library, urgency parsed; toggle done; open a task → add steps; verify it
@@ -83,7 +82,7 @@ permission, and schedules a one-shot notification 10s out.
 
 Slice 2 turns Detail into a full task editor: editable title, a description
 field (`note.content`), and checkable/editable subtasks (`note.items`), with
-`note_type` derived (`checklist` when ≥1 subtask, else `note`) and co-written.
+`note_type` derived (`checklist` when ≥1 subtask, else `note`) only when its current value is absent, `'note'`, or `'checklist'` — legacy web types are left untouched; per-item keys (`id`, `indent`, `agent_status`, `agent_session_id`) are also preserved through mobile edits.
 TaskRow now shows a `done/total` count with a small progress bar. Zero backend
 change; web parity comes from `note_type`/`items`/`content` alone.
 
@@ -112,8 +111,7 @@ Verified this session:
 
 **Known web-parity gap:** the mobile description field (`note.content`) is stored and
 round-trips safely, but it is invisible and uneditable on web for `checklist` notes — the
-web checklist view (`static/js/notes.js:1800,1834`) only renders `content` for notes
-without items, and the web checklist editor (`notes.js:2929`) has no description textarea.
+web renders descriptions only for `goal` notes (`static/js/notes.js:1800,1834`); for other note types, it renders `content` only when there are no items, so `checklist` notes show subtasks but not `content`. The web checklist editor (`notes.js:2929`) has no description textarea.
 Nothing is lost (the web save path omits `content` for checklist notes, so the backend
 never clears it), it's just not surfaced there yet. Fixing that is deferred to the
 end-stage web task-field slice.
