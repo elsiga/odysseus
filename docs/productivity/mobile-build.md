@@ -78,3 +78,33 @@ permission, and schedules a one-shot notification 10s out.
    → capture offline → back online → syncs.
 4. **Notification:** tap the 🔔 test-reminder affordance on Home, lock the screen →
    notification fires within ~10s.
+
+## Slice 2 — Subtasks + Description
+
+Slice 2 turns Detail into a full task editor: editable title, a description
+field (`note.content`), and checkable/editable subtasks (`note.items`), with
+`note_type` derived (`checklist` when ≥1 subtask, else `note`) and co-written.
+TaskRow now shows a `done/total` count with a small progress bar. Zero backend
+change; web parity comes from `note_type`/`items`/`content` alone.
+
+Build command (unchanged):
+```
+bash mobile/build-apk.sh        # runs: npm install → cp sync-core.js → node build.mjs → cap sync android → gradlew assembleDebug → dist/odysseus.apk
+```
+Verified this session:
+- `node build.mjs` → `built www/js/app.js` clean (no diff vs. the committed bundle).
+- `gradlew assembleDebug` → `BUILD SUCCESSFUL`; `APK → dist/odysseus.apk (3.9M)`.
+- Bundle packaged into the APK: `unzip -l dist/odysseus.apk` shows
+  `assets/public/index.html`, `assets/public/js/app.js`,
+  `assets/public/js/sync-core.js` all present.
+
+### On-device proof — PENDING (manual, requires a physical/emulated device; none attached
+### to this build box)
+1. `adb install -r dist/odysseus.apk` (or copy to phone), open, token already saved.
+2. Open a task → **edit its title**, **add a description**, **add 3 subtasks**, **check 1** →
+   the row on Home/Library shows `1/3` with a ~33% progress bar; the description persists
+   on reopen.
+3. Open odysseus web Notes at `https://chat.elsiga.ch` → the same task renders as a
+   **checklist** with those subtasks (one checked) and the description as its body.
+4. Toggle a subtask on mobile → it reflects on web (round-trip); remove all subtasks →
+   the task reverts to a plain note on web (`note_type` back to `note`).
