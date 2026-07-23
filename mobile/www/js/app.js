@@ -448,6 +448,12 @@ async function setToken(token) {
 }
 
 // src/store.ts
+var _writeQ = Promise.resolve();
+function enqueueWrite(fn) {
+  const run = _writeQ.then(fn, fn);
+  _writeQ = run.then(() => void 0, () => void 0);
+  return run;
+}
 function useNotesStore() {
   const [notes, setNotes] = d2([]);
   const [status, setStatus] = d2("");
@@ -481,22 +487,22 @@ function useNotesStore() {
     })();
   }, []);
   async function addTask(data) {
-    await notesRepo.create({ done: false, bucket: "today", ...data });
+    await enqueueWrite(() => notesRepo.create({ done: false, bucket: "today", ...data }));
     await refresh();
     void syncNow();
   }
   async function toggle(n3) {
-    await notesRepo.update(n3.id, { done: !n3.done });
+    await enqueueWrite(() => notesRepo.update(n3.id, { done: !n3.done }));
     await refresh();
     void syncNow();
   }
   async function update(id, patch) {
-    await notesRepo.update(id, patch);
+    await enqueueWrite(() => notesRepo.update(id, patch));
     await refresh();
     void syncNow();
   }
   async function remove(n3) {
-    await notesRepo.remove(n3.id);
+    await enqueueWrite(() => notesRepo.remove(n3.id));
     await refresh();
     void syncNow();
   }
@@ -523,12 +529,22 @@ var theme = {
 function deriveNoteType(items) {
   return items.length > 0 ? "checklist" : "note";
 }
+function nextNoteType(current, items) {
+  if (current == null || current === "note" || current === "checklist") {
+    return deriveNoteType(items);
+  }
+  return void 0;
+}
 function subtaskProgress(items) {
   const list = items ?? [];
   const total = list.length;
   const done = list.filter((s3) => s3.done).length;
   return { done, total, ratio: total > 0 ? done / total : 0 };
 }
+var _uid = 0;
+var nextRid = () => ++_uid;
+var toRows = (items) => items.map((s3) => ({ ...s3, rid: nextRid(), text: s3.text ?? "", done: !!s3.done }));
+var toItems = (rows) => rows.map(({ rid, ...item }) => item);
 
 // src/components.ts
 function TaskRow({ note, onToggle, onOpen }) {
@@ -885,25 +901,23 @@ function Project({ project, notes, onToggle, onOpen, onCapture, onBack }) {
 }
 
 // src/screens/Detail.ts
-var _uid = 0;
-var toRows = (items) => items.map((s3) => ({ id: ++_uid, text: s3.text, done: !!s3.done }));
-var toItems = (rows) => rows.map(({ text, done }) => ({ text, done }));
 function Detail({ note, onUpdate, onBack }) {
   const [title, setTitle] = d2(note.title || "");
   const [desc, setDesc] = d2(note.content || "");
   const [rows, setRows] = d2(toRows(note.items || []));
   function persist(next) {
     const items = toItems(next);
-    onUpdate({ items, note_type: deriveNoteType(items) });
+    const nt = nextNoteType(note.note_type, items);
+    onUpdate(nt === void 0 ? { items } : { items, note_type: nt });
   }
   function setAndPersist(next) {
     setRows(next);
     persist(next);
   }
-  const toggle = (id) => setAndPersist(rows.map((r3) => r3.id === id ? { ...r3, done: !r3.done } : r3));
-  const remove = (id) => setAndPersist(rows.filter((r3) => r3.id !== id));
-  const add = () => setAndPersist([...rows, { id: ++_uid, text: "", done: false }]);
-  const editLocal = (id, text) => setRows(rows.map((r3) => r3.id === id ? { ...r3, text } : r3));
+  const toggle = (rid) => setAndPersist(rows.map((r3) => r3.rid === rid ? { ...r3, done: !r3.done } : r3));
+  const remove = (rid) => setAndPersist(rows.filter((r3) => r3.rid !== rid));
+  const add = () => setAndPersist([...rows, { rid: nextRid(), text: "", done: false }]);
+  const editLocal = (rid, text) => setRows(rows.map((r3) => r3.rid === rid ? { ...r3, text } : r3));
   const saveTitle = () => {
     const t4 = title.trim();
     if (t4 !== (note.title || "")) onUpdate({ title: t4 });
@@ -935,7 +949,7 @@ function Detail({ note, onUpdate, onBack }) {
 
       <div style=${{ font: `400 13px ${theme.mono}`, color: theme.muted, padding: "0 4px" }}>break it down</div>
       ${rows.map((r3) => html`
-        <div key=${r3.id} style=${{
+        <div key=${r3.rid} style=${{
     display: "flex",
     alignItems: "center",
     gap: "12px",
@@ -944,7 +958,7 @@ function Detail({ note, onUpdate, onBack }) {
     border: `1px solid ${theme.border}`,
     borderRadius: "12px"
   }}>
-          <div onClick=${() => toggle(r3.id)} style=${{
+          <div onClick=${() => toggle(r3.rid)} style=${{
     width: "20px",
     height: "20px",
     borderRadius: "6px",
@@ -953,7 +967,7 @@ function Detail({ note, onUpdate, onBack }) {
     border: `2px solid ${r3.done ? theme.accent : "#4A5866"}`,
     background: r3.done ? theme.accent : "transparent"
   }}></div>
-          <input value=${r3.text} onInput=${(e3) => editLocal(r3.id, e3.target.value)} onBlur=${() => persist(rows)}
+          <input value=${r3.text} onInput=${(e3) => editLocal(r3.rid, e3.target.value)} onBlur=${() => persist(rows)}
             placeholder="Subtask"
             style=${{
     flex: 1,
@@ -965,7 +979,7 @@ function Detail({ note, onUpdate, onBack }) {
     textDecoration: r3.done ? "line-through" : "none",
     padding: "10px 0"
   }} />
-          <span onClick=${() => remove(r3.id)} style=${{
+          <span onClick=${() => remove(r3.rid)} style=${{
     width: "44px",
     height: "44px",
     display: "flex",

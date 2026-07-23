@@ -98,13 +98,22 @@ Verified this session:
   `assets/public/index.html`, `assets/public/js/app.js`,
   `assets/public/js/sync-core.js` all present.
 
-### On-device proof — PENDING (manual, requires a physical/emulated device; none attached
-### to this build box)
+### On-device proof — PENDING (manual, requires a physical/emulated device; none attached to this build box)
 1. `adb install -r dist/odysseus.apk` (or copy to phone), open, token already saved.
 2. Open a task → **edit its title**, **add a description**, **add 3 subtasks**, **check 1** →
    the row on Home/Library shows `1/3` with a ~33% progress bar; the description persists
    on reopen.
 3. Open odysseus web Notes at `https://chat.elsiga.ch` → the same task renders as a
-   **checklist** with those subtasks (one checked) and the description as its body.
+   **checklist** with those subtasks (one checked). Do **not** expect the description to
+   appear — the web checklist view does not render `content` at all (see "Known web-parity
+   gap" below).
 4. Toggle a subtask on mobile → it reflects on web (round-trip); remove all subtasks →
    the task reverts to a plain note on web (`note_type` back to `note`).
+
+**Known web-parity gap:** the mobile description field (`note.content`) is stored and
+round-trips safely, but it is invisible and uneditable on web for `checklist` notes — the
+web checklist view (`static/js/notes.js:1800,1834`) only renders `content` for notes
+without items, and the web checklist editor (`notes.js:2929`) has no description textarea.
+Nothing is lost (the web save path omits `content` for checklist notes, so the backend
+never clears it), it's just not surfaced there yet. Fixing that is deferred to the
+end-stage web task-field slice.

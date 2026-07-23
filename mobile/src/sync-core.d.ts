@@ -1,9 +1,11 @@
 export interface NoteRec {
   id: string; title?: string; text?: string; content?: string | null;
-  items?: Array<{ text: string; done: boolean }> | null;
+  items?: Array<{ text: string; done: boolean } & Record<string, unknown>> | null;
   done?: boolean; archived?: boolean; bucket?: string; urgency?: number;
   project?: string | null; sort_order?: number; due_date?: string | null;
-  note_type?: 'note' | 'checklist';
+  // Legacy web note types ('todo', 'goal', …) must round-trip through this
+  // field untouched by mobile edits — see subtasks.ts#nextNoteType.
+  note_type?: string;
 }
 export const notesRepo: {
   list(): Promise<NoteRec[]>
