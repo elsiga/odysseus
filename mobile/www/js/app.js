@@ -519,9 +519,21 @@ var theme = {
   mono: "'JetBrains Mono',ui-monospace,monospace"
 };
 
+// src/subtasks.ts
+function deriveNoteType(items) {
+  return items.length > 0 ? "checklist" : "note";
+}
+function subtaskProgress(items) {
+  const list = items ?? [];
+  const total = list.length;
+  const done = list.filter((s3) => s3.done).length;
+  return { done, total, ratio: total > 0 ? done / total : 0 };
+}
+
 // src/components.ts
 function TaskRow({ note, onToggle, onOpen }) {
   const done = !!note.done;
+  const { done: sd, total: st, ratio } = subtaskProgress(note.items);
   return html`
     <div style=${{
     display: "flex",
@@ -545,14 +557,35 @@ function TaskRow({ note, onToggle, onOpen }) {
     flex: "none",
     cursor: "pointer"
   }}></div>
-      <span onClick=${onOpen} style=${{
+      <div onClick=${onOpen} style=${{
     flex: 1,
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+    cursor: onOpen ? "pointer" : "default"
+  }}>
+        <span style=${{
     font: `400 15px ${theme.mono}`,
     color: done ? theme.muted : theme.text,
-    textDecoration: done ? "line-through" : "none",
-    cursor: onOpen ? "pointer" : "default"
+    textDecoration: done ? "line-through" : "none"
   }}>${note.title || "(untitled)"}</span>
-      <span style=${{ font: `400 11px ${theme.mono}`, color: theme.muted }}>${note.project ? "#" + note.project : ""}</span>
+        ${st > 0 ? html`
+          <div style=${{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <div style=${{
+    flex: 1,
+    maxWidth: "120px",
+    height: "3px",
+    borderRadius: "2px",
+    background: theme.card2,
+    overflow: "hidden"
+  }}>
+              <div style=${{ width: `${Math.round(ratio * 100)}%`, height: "100%", background: theme.accent }}></div>
+            </div>
+            <span style=${{ font: `400 11px ${theme.mono}`, color: theme.muted, flex: "none" }}>${sd}/${st}</span>
+          </div>` : ""}
+      </div>
+      <span style=${{ font: `400 11px ${theme.mono}`, color: theme.muted, flex: "none" }}>${note.project ? "#" + note.project : ""}</span>
     </div>`;
 }
 function BucketChip({ label, selected, onClick }) {
@@ -849,11 +882,6 @@ function Project({ project, notes, onToggle, onOpen, onCapture, onBack }) {
     cursor: "pointer"
   }}>＋ add a task to this project</div>
     </div>`;
-}
-
-// src/subtasks.ts
-function deriveNoteType(items) {
-  return items.length > 0 ? "checklist" : "note";
 }
 
 // src/screens/Detail.ts

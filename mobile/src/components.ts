@@ -1,11 +1,13 @@
 import { html } from './html'
 import { theme as T } from './theme'
 import type { NoteRec } from './notes'
+import { subtaskProgress } from './subtasks'
 
 // Task row — states via props (active/done handled by caller styling)
 export function TaskRow({ note, onToggle, onOpen }:
   { note: NoteRec; onToggle: () => void; onOpen?: () => void }) {
   const done = !!note.done
+  const { done: sd, total: st, ratio } = subtaskProgress(note.items)
   return html`
     <div style=${{ display: 'flex', alignItems: 'center', gap: '12px', padding: '13px 14px',
                    border: `1px solid ${T.card2}`, borderRadius: '12px', opacity: done ? 0.55 : 1 }}>
@@ -13,10 +15,20 @@ export function TaskRow({ note, onToggle, onOpen }:
            style=${{ width: '22px', height: '22px', borderRadius: '50%',
                      border: `2px solid ${done ? T.accent : '#4A5866'}`,
                      background: done ? T.accent : 'transparent', flex: 'none', cursor: 'pointer' }}></div>
-      <span onClick=${onOpen} style=${{ flex: 1, font: `400 15px ${T.mono}`,
-             color: done ? T.muted : T.text, textDecoration: done ? 'line-through' : 'none',
-             cursor: onOpen ? 'pointer' : 'default' }}>${note.title || '(untitled)'}</span>
-      <span style=${{ font: `400 11px ${T.mono}`, color: T.muted }}>${note.project ? '#' + note.project : ''}</span>
+      <div onClick=${onOpen} style=${{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '6px',
+             cursor: onOpen ? 'pointer' : 'default' }}>
+        <span style=${{ font: `400 15px ${T.mono}`, color: done ? T.muted : T.text,
+               textDecoration: done ? 'line-through' : 'none' }}>${note.title || '(untitled)'}</span>
+        ${st > 0 ? html`
+          <div style=${{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style=${{ flex: 1, maxWidth: '120px', height: '3px', borderRadius: '2px',
+                   background: T.card2, overflow: 'hidden' }}>
+              <div style=${{ width: `${Math.round(ratio * 100)}%`, height: '100%', background: T.accent }}></div>
+            </div>
+            <span style=${{ font: `400 11px ${T.mono}`, color: T.muted, flex: 'none' }}>${sd}/${st}</span>
+          </div>` : ''}
+      </div>
+      <span style=${{ font: `400 11px ${T.mono}`, color: T.muted, flex: 'none' }}>${note.project ? '#' + note.project : ''}</span>
     </div>`
 }
 
