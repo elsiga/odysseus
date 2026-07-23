@@ -1149,6 +1149,33 @@ def _migrate_add_notes_sort_order():
         except Exception:
             pass
 
+def _migrate_add_notes_task_fields():
+    """Add bucket/urgency/project/done to notes if missing. Guarded + idempotent."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(notes)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns and "bucket" not in columns:
+            conn.execute("ALTER TABLE notes ADD COLUMN bucket TEXT DEFAULT 'today'")
+        if columns and "urgency" not in columns:
+            conn.execute("ALTER TABLE notes ADD COLUMN urgency INTEGER DEFAULT 0")
+        if columns and "project" not in columns:
+            conn.execute("ALTER TABLE notes ADD COLUMN project TEXT")
+        if columns and "done" not in columns:
+            conn.execute("ALTER TABLE notes ADD COLUMN done BOOLEAN DEFAULT 0")
+        conn.commit()
+        logging.getLogger(__name__).info("Migrated: added task fields to notes")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"notes task-fields migration failed: {e}")
+    finally:
+        if conn:
+            conn.close()
+
 def _migrate_add_notes_rev():
     """Add the monotonic `rev` column to notes if it doesn't exist (per-record LWW)."""
     import sqlite3
@@ -1751,6 +1778,10 @@ class Note(TimestampMixin, Base):
     # Chat session spawned by the note's "Agent" button (solve-this-todo).
     # The note shows a clickable tag that opens this session for review.
     agent_session_id  = Column(String, nullable=True)
+    bucket     = Column(String, default="today")    # today, soon, someday
+    urgency    = Column(Integer, default=0)          # 0, 1, 2
+    project    = Column(String, nullable=True)       # plain string tag, not a table
+    done       = Column(Boolean, default=False)      # task-level completion
     rev = Column(Integer, nullable=False, default=1, server_default="1")
 
 
@@ -1953,6 +1984,7 @@ def init_db():
     _migrate_add_cached_models_column()
     _migrate_add_pinned_models_column()
     _migrate_add_notes_sort_order()
+    _migrate_add_notes_task_fields()
     _migrate_add_notes_rev()
     _migrate_add_model_type_column()
     _migrate_add_model_endpoint_refresh_columns()
