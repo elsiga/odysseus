@@ -567,6 +567,16 @@ function BucketChip({ label, selected, onClick }) {
     color: selected ? theme.accent : theme.muted
   }}>${label}</span>`;
 }
+function ProjectTag({ name }) {
+  return html`<span style=${{
+    padding: "5px 12px",
+    borderRadius: "999px",
+    background: theme.card,
+    border: `1px solid ${theme.border}`,
+    font: `400 12px ${theme.mono}`,
+    color: theme.text2
+  }}>#${name}</span>`;
+}
 function PrimaryButton({ label, onClick, disabled }) {
   return html`
     <div onClick=${disabled ? void 0 : onClick}
@@ -632,6 +642,14 @@ function pickSuggestion(notes, idx) {
   const today = activeByBucket(notes).today;
   if (today.length === 0) return null;
   return today[(idx % today.length + today.length) % today.length];
+}
+function projectsOf(notes) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const n3 of notes) {
+    if (!isActive(n3) || !n3.project) continue;
+    counts.set(n3.project, (counts.get(n3.project) || 0) + 1);
+  }
+  return [...counts.entries()].map(([name, count]) => ({ name, count }));
 }
 
 // src/screens/Home.ts
@@ -780,6 +798,33 @@ function Capture({ onSave, onClose, defaultProject }) {
     </${BottomSheet}>`;
 }
 
+// src/screens/Library.ts
+function Library({ notes, onToggle, onOpen, onOpenProject, onBack }) {
+  const by = activeByBucket(notes);
+  const projects = projectsOf(notes);
+  const section = (label, rows) => html`
+    <div style=${{ display: "flex", flexDirection: "column", gap: "8px" }}>
+      <div style=${{ font: `600 11px ${theme.mono}`, letterSpacing: ".14em", color: theme.muted, padding: "0 2px" }}>${label.toUpperCase()} · ${rows.length}</div>
+      ${rows.length ? rows.map((n3) => html`<${TaskRow} key=${n3.id} note=${n3} onToggle=${() => onToggle(n3)} onOpen=${() => onOpen(n3)} />`) : html`<div style=${{ font: `400 13px ${theme.mono}`, color: theme.faint, padding: "0 2px" }}>nothing here</div>`}
+    </div>`;
+  return html`
+    <div style=${{ minHeight: "100vh", display: "flex", flexDirection: "column", gap: "18px", padding: "26px 20px" }}>
+      <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 4px" }}>
+        <span style=${{ font: `700 21px ${theme.mono}` }}>Library</span>
+        <span onClick=${onBack} style=${{ font: `400 13px ${theme.mono}`, color: theme.muted, cursor: "pointer" }}>← home</span>
+      </div>
+      ${["today", "soon", "someday"].map((b2) => section(b2, by[b2]))}
+      <div style=${{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        <div style=${{ font: `600 11px ${theme.mono}`, letterSpacing: ".14em", color: theme.muted, padding: "0 2px" }}>PROJECTS</div>
+        <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          ${projects.length ? projects.map((p3) => html`
+            <div key=${p3.name} onClick=${() => onOpenProject(p3.name)} style=${{ cursor: "pointer" }}>
+              <${ProjectTag} name=${`${p3.name} \xB7 ${p3.count}`} /></div>`) : html`<span style=${{ font: `400 13px ${theme.mono}`, color: theme.faint }}>no projects yet</span>`}
+        </div>
+      </div>
+    </div>`;
+}
+
 // src/main.ts
 function Root() {
   const store = useNotesStore();
@@ -804,6 +849,10 @@ function Root() {
       <${Home} notes=${store.notes} status=${store.status} onToggle=${store.toggle} onOpen=${openDetail}
         onCapture=${() => setRoute({ name: "capture" })} onLibrary=${() => setRoute({ name: "library" })} />
       <${Capture} onSave=${store.addTask} onClose=${() => setRoute({ name: "home" })} />`;
+  if (route.name === "library")
+    return html`<${Library} notes=${store.notes} onToggle=${store.toggle} onOpen=${openDetail}
+      onOpenProject=${(name) => setRoute({ name: "project", project: name })}
+      onBack=${() => setRoute({ name: "home" })} />`;
   return html`<p style="padding:24px">…</p>`;
 }
 function TokenGate({ onSave }) {
