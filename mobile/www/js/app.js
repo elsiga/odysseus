@@ -1634,11 +1634,16 @@ function useBackButton(handler) {
   h2(() => {
     let remove;
     let cancelled = false;
-    void App.addListener("backButton", () => ref.current()).then((h3) => {
+    void App.addListener("backButton", () => {
+      ;
+      document.activeElement?.blur();
+      ref.current();
+    }).then((h3) => {
       if (cancelled) void h3.remove();
       else remove = () => {
         void h3.remove();
       };
+    }, () => {
     });
     return () => {
       cancelled = true;
@@ -1657,9 +1662,13 @@ function Root() {
   const [tok, setTok] = d2(void 0);
   const lastBackAt = A2(0);
   const route = stack[stack.length - 1];
-  const navigate = (r3) => setStack((s3) => pushRoute(s3, r3));
+  const navigate = (r3) => {
+    lastBackAt.current = 0;
+    setStack((s3) => pushRoute(s3, r3));
+  };
   function back() {
     if (stack.length > 1) {
+      lastBackAt.current = 0;
       setStack((s3) => popRoute(s3));
       return;
     }

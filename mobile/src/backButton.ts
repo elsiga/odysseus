@@ -16,10 +16,18 @@ export function useBackButton(handler: () => void): void {
   useEffect(() => {
     let remove: (() => void) | undefined
     let cancelled = false
-    void App.addListener('backButton', () => ref.current()).then(h => {
+    void App.addListener('backButton', () => {
+      // Detail persists title/description/subtasks on blur. Hardware back
+      // unmounts the input directly and Blink does not fire blur on removal,
+      // so flush the focused element first or the pending save is lost.
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      ref.current()
+    }).then(h => {
       // The component may have unmounted while addListener was still pending.
       if (cancelled) void h.remove()
       else remove = () => { void h.remove() }
+    }, () => {
+      // Plugin unavailable (e.g. web build) — no-op instead of an unhandled rejection.
     })
     return () => { cancelled = true; remove?.() }
   }, [])

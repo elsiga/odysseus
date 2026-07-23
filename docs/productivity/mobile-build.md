@@ -125,7 +125,8 @@ design — pressing once and waiting does not exit). The on-screen `← back`/`�
 affordances on Library/Project/Detail were removed: they exist in the prototype only
 because a static mock has no hardware back to rely on, so they are mock scaffolding
 rather than a design element. Removing them follows the prototype's intent — do not
-"restore them to match the design file".
+"restore them to match the design file". On the token gate, back is the root exit
+path (double-press), because there is nowhere to navigate back to.
 
 This depends on `@capacitor/app`, which must be linked into the Android project by
 `npx cap sync android` — presence in `package.json` alone does not register it. Verified
@@ -163,3 +164,7 @@ Verified this session:
 4. On Home, press back once, wait 3 seconds, press once more: the app does NOT exit
    (the window lapsed).
 5. Open the capture sheet, press back: the sheet closes and Home remains.
+6. Open a task, edit its **title** (or a subtask's text), press back WITHOUT tapping
+   elsewhere first, then reopen the task — **the edit must have been saved**.
+7. On Home press back once; go to Library and back to Home; press back once more —
+   **the app must NOT exit** (the exit arm is reset by navigation).

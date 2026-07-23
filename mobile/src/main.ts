@@ -18,12 +18,13 @@ function Root() {
   const lastBackAt = useRef(0)
 
   const route = stack[stack.length - 1]
-  const navigate = (r: Route) => setStack(s => pushRoute(s, r))
+  // Any stack change disarms the root exit gesture — see back() below.
+  const navigate = (r: Route) => { lastBackAt.current = 0; setStack(s => pushRoute(s, r)) }
 
   // Back: pop one entry, or at the root require a second press within
   // EXIT_WINDOW_MS to exit. No toast, by design decision.
   function back() {
-    if (stack.length > 1) { setStack(s => popRoute(s)); return }
+    if (stack.length > 1) { lastBackAt.current = 0; setStack(s => popRoute(s)); return }
     const now = Date.now()
     if (shouldExit(lastBackAt.current, now)) { exitApp(); return }
     lastBackAt.current = now
