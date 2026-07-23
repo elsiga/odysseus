@@ -3,6 +3,7 @@ export interface NoteRec {
   items?: Array<{ text: string; done: boolean }> | null;
   done?: boolean; archived?: boolean; bucket?: string; urgency?: number;
   project?: string | null; sort_order?: number; due_date?: string | null;
+  note_type?: 'note' | 'checklist';
 }
 export const notesRepo: {
   list(): Promise<NoteRec[]>
