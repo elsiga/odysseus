@@ -1529,6 +1529,19 @@ function Project({ project, notes, onToggle, onOpen, onCapture }) {
 }
 
 // src/recurrence.ts
+function nthWeekdayOfMonth(year, month, weekday, n3) {
+  const first = new Date(year, month, 1);
+  const offset = (weekday - first.getDay() + 7) % 7;
+  let day = 1 + offset + (n3 - 1) * 7;
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  if (day > lastDay) day -= 7;
+  return new Date(year, month, day, 0, 0, 0);
+}
+function lastWeekdayOfMonth(year, month, weekday) {
+  const lastDay = new Date(year, month + 1, 0);
+  const back = (lastDay.getDay() - weekday + 7) % 7;
+  return new Date(year, month, lastDay.getDate() - back, 0, 0, 0);
+}
 function normalizeRepeat(repeat, anchor) {
   if (!repeat || repeat === "none") return "none";
   if (repeat === "daily" || repeat === "yearly") return repeat;
@@ -1549,45 +1562,170 @@ function simpleRepeat(repeat) {
   if (/^monthly:/.test(repeat) || repeat.startsWith("monthly")) return "monthly";
   return "none";
 }
+function snapToRepeat(currentDate, normRepeat, now = /* @__PURE__ */ new Date()) {
+  const hh = currentDate.getHours();
+  const mm = currentDate.getMinutes();
+  const nowMs = now.getTime();
+  const anchor = currentDate.getTime() > nowMs ? currentDate : now;
+  const parts = normRepeat.split(":");
+  const kind = parts[0];
+  if (kind === "weekly") {
+    const targetWd = parseInt(parts[1], 10);
+    if (isNaN(targetWd)) return null;
+    const d3 = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate(), hh, mm, 0, 0);
+    const delta = (targetWd - d3.getDay() + 7) % 7;
+    d3.setDate(d3.getDate() + delta);
+    if (d3.getTime() <= nowMs) d3.setDate(d3.getDate() + 7);
+    return d3;
+  }
+  if (kind === "monthly") {
+    const sub = parts[1];
+    let y3 = anchor.getFullYear();
+    let m3 = anchor.getMonth();
+    for (let tries = 0; tries < 14; tries++) {
+      let target;
+      if (sub === "day") {
+        const wantDay = parseInt(parts[2], 10);
+        if (isNaN(wantDay)) return null;
+        const lastDay = new Date(y3, m3 + 1, 0).getDate();
+        target = new Date(y3, m3, Math.min(wantDay, lastDay));
+      } else if (sub === "nth") {
+        const n3 = parseInt(parts[2], 10);
+        const wd = parseInt(parts[3], 10);
+        if (isNaN(n3) || isNaN(wd)) return null;
+        target = nthWeekdayOfMonth(y3, m3, wd, n3);
+      } else if (sub === "last") {
+        const wd = parseInt(parts[2], 10);
+        if (isNaN(wd)) return null;
+        target = lastWeekdayOfMonth(y3, m3, wd);
+      } else {
+        return null;
+      }
+      target.setHours(hh, mm, 0, 0);
+      if (target.getTime() > nowMs && target.getTime() >= anchor.getTime()) return target;
+      m3++;
+      if (m3 > 11) {
+        m3 = 0;
+        y3++;
+      }
+    }
+    return null;
+  }
+  return null;
+}
+var _ORDINALS = ["1st", "2nd", "3rd", "4th", "5th"];
+var _DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+function monthlyDescriptor(norm) {
+  const parts = (norm || "").split(":");
+  if (parts[0] !== "monthly") return "";
+  if (parts[1] === "day") return `Day ${parts[2]}`;
+  if (parts[1] === "nth") {
+    const n3 = parseInt(parts[2], 10);
+    const wd = parseInt(parts[3], 10);
+    return `${_ORDINALS[n3 - 1] || `${n3}th`} ${_DAYS[wd].slice(0, 3)}`;
+  }
+  if (parts[1] === "last") {
+    const wd = parseInt(parts[2], 10);
+    return `Last ${_DAYS[wd].slice(0, 3)}`;
+  }
+  return "";
+}
 
 // src/screens/Detail.ts
+var CAL_ICON = html`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style=${{ flex: "none" }}><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`;
+var CLOCK_ICON = html`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style=${{ flex: "none" }}><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>`;
 function Detail({ note, onUpdate }) {
   const [title, setTitle] = d2(note.title || "");
   const [desc, setDesc] = d2(note.content || "");
   const [rows, setRows] = d2(toRows(note.items || []));
-  const [dateStr, setDateStr] = d2(datePart(note.due_date));
-  const [timeStr, setTimeStr] = d2(timePart(note.due_date));
+  const initDate = datePart(note.due_date) || toDateOnlyStr(/* @__PURE__ */ new Date());
+  const initTime = timePart(note.due_date) || "18:00";
+  const [dateStr, setDateStr] = d2(initDate);
+  const [timeStr, setTimeStr] = d2(initTime);
   const [dur, setDur] = d2(note.duration_min ?? 0);
+  const [fullRep, setFullRep] = d2(
+    normalizeRepeat(note.repeat, note.due_date ? new Date(note.due_date) : /* @__PURE__ */ new Date(`${initDate}T${initTime}`))
+  );
   const [rep, setRep] = d2(simpleRepeat(note.repeat));
-  const rep0 = simpleRepeat(note.repeat);
-  const repeat0 = normalizeRepeat(note.repeat, note.due_date ? new Date(note.due_date) : /* @__PURE__ */ new Date());
-  const DURATIONS = [15, 25, 45, 60, 90];
-  function commitWhen(nd, nt, nr) {
+  const [monthNth, setMonthNth] = d2(/^monthly:nth:/.test(fullRep));
+  const [nthN, setNthN] = d2(() => {
+    const m3 = /^monthly:nth:(\d):(\d)$/.exec(fullRep);
+    return m3 ? +m3[1] : 0;
+  });
+  const [nthW, setNthW] = d2(() => {
+    const m3 = /^monthly:nth:(\d):(\d)$/.exec(fullRep);
+    return m3 ? +m3[2] : -1;
+  });
+  const WEEK = ["S", "M", "T", "W", "T", "F", "S"];
+  const ORD = ["1st", "2nd", "3rd", "4th"];
+  const dueDay = +dateStr.slice(8, 10) || (/* @__PURE__ */ new Date()).getDate();
+  const dueWd = (/* @__PURE__ */ new Date(`${dateStr || toDateOnlyStr(/* @__PURE__ */ new Date())}T${timeStr || "00:00"}`)).getDay();
+  function commit(nd, nt, repeatVal) {
     const due = composeWhen(nd, nt, /* @__PURE__ */ new Date());
-    let repeat;
-    if (nr === "none" || !due) repeat = "none";
-    else if (nr === rep0 && /^monthly:(nth|last):/.test(repeat0)) repeat = repeat0;
-    else repeat = normalizeRepeat(nr, new Date(due));
-    onUpdate({ due_date: due, repeat });
+    onUpdate({ due_date: due, repeat: due ? repeatVal : "none" });
   }
   const onDate = (v3) => {
     setDateStr(v3);
-    commitWhen(v3, timeStr, rep);
+    commit(v3, timeStr, fullRep);
   };
   const onTime = (v3) => {
     const nd = v3 && !dateStr ? toDateOnlyStr(/* @__PURE__ */ new Date()) : dateStr;
     setTimeStr(v3);
     if (nd !== dateStr) setDateStr(nd);
-    commitWhen(nd, v3, rep);
-  };
-  const onRepeat = (v3) => {
-    setRep(v3);
-    commitWhen(dateStr, timeStr, v3);
+    commit(nd, v3, fullRep);
   };
   const onDuration = (v3) => {
-    const nv = dur === v3 ? 0 : v3;
-    setDur(nv);
-    onUpdate({ duration_min: nv });
+    setDur(v3);
+    onUpdate({ duration_min: v3 });
+  };
+  function clearWhen() {
+    setDateStr("");
+    setTimeStr("");
+    setFullRep("none");
+    setRep("none");
+    setMonthNth(false);
+    onUpdate({ due_date: "", repeat: "none" });
+  }
+  function applyRepeat(val, snap) {
+    let nd = dateStr, nt = timeStr;
+    if (snap) {
+      const snapped = snapToRepeat(/* @__PURE__ */ new Date(`${dateStr || toDateOnlyStr(/* @__PURE__ */ new Date())}T${timeStr || "18:00"}`), val);
+      if (snapped) {
+        const s3 = toLocalDatetimeStr(snapped);
+        nd = datePart(s3);
+        nt = timePart(s3);
+      }
+    }
+    setDateStr(nd);
+    setTimeStr(nt);
+    setFullRep(val);
+    setRep(simpleRepeat(val));
+    onUpdate({ due_date: composeWhen(nd, nt, /* @__PURE__ */ new Date()), repeat: val });
+  }
+  function onRepeatChip(r3) {
+    if (r3 === "none" || r3 === "daily" || r3 === "yearly") {
+      setMonthNth(false);
+      applyRepeat(r3, false);
+    } else if (r3 === "weekly") {
+      setMonthNth(false);
+      applyRepeat(`weekly:${dueWd}`, false);
+    } else if (r3 === "monthly") {
+      setMonthNth(false);
+      applyRepeat(`monthly:day:${dueDay}`, false);
+    }
+  }
+  const onWeeklyPick = (w3) => applyRepeat(`weekly:${w3}`, true);
+  const onMonthlyDay = () => {
+    setMonthNth(false);
+    applyRepeat(`monthly:day:${dueDay}`, false);
+  };
+  const onNthN = (n3) => {
+    setNthN(n3);
+    if (nthW >= 0) applyRepeat(`monthly:nth:${n3}:${nthW}`, true);
+  };
+  const onNthW = (w3) => {
+    setNthW(w3);
+    if (nthN > 0) applyRepeat(`monthly:nth:${nthN}:${w3}`, true);
   };
   function persist(next) {
     const items = toItems(next);
@@ -1632,50 +1770,92 @@ function Detail({ note, onUpdate }) {
 
       <div style=${{ display: "flex", flexDirection: "column", gap: "10px", padding: "4px 4px 0" }}>
         <div style=${{ display: "flex", gap: "10px", alignItems: "center" }}>
-          <input type="date" value=${dateStr} onInput=${(e3) => onDate(e3.target.value)}
-            style=${{
+          <div style=${{
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
     flex: 1,
     minWidth: 0,
     background: theme.bg2,
     border: `1px solid ${theme.border}`,
     borderRadius: "10px",
-    padding: "10px 12px",
+    padding: "0 12px",
+    color: theme.muted
+  }}>
+            ${CAL_ICON}
+            <input type="date" value=${dateStr} onInput=${(e3) => onDate(e3.target.value)}
+              style=${{
+    flex: 1,
+    minWidth: 0,
+    background: "transparent",
+    border: "none",
+    padding: "10px 0",
     font: `400 14px ${theme.mono}`,
     color: theme.text
   }} />
-          <input type="time" value=${timeStr} onInput=${(e3) => onTime(e3.target.value)}
-            style=${{
-    width: "118px",
+          </div>
+          <div style=${{
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    width: "128px",
     background: theme.bg2,
     border: `1px solid ${theme.border}`,
     borderRadius: "10px",
-    padding: "10px 12px",
+    padding: "0 12px",
+    color: theme.muted
+  }}>
+            ${CLOCK_ICON}
+            <input type="time" value=${timeStr} onInput=${(e3) => onTime(e3.target.value)}
+              style=${{
+    flex: 1,
+    minWidth: 0,
+    background: "transparent",
+    border: "none",
+    padding: "10px 0",
     font: `400 14px ${theme.mono}`,
     color: theme.text
   }} />
+          </div>
+          <span onClick=${clearWhen} title="Clear" style=${{
+    width: "40px",
+    height: "40px",
+    flex: "none",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    userSelect: "none",
+    color: theme.muted,
+    font: `400 18px ${theme.mono}`
+  }}>×</span>
         </div>
 
-        ${timeStr ? html`
-          <div style=${{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
-            <span style=${{ font: `400 12px ${theme.mono}`, color: theme.muted, marginRight: "2px" }}>for</span>
-            ${DURATIONS.map((m3) => html`
-              <span key=${m3} onClick=${() => onDuration(m3)} style=${{
-    padding: "6px 12px",
-    borderRadius: "999px",
-    cursor: "pointer",
-    font: `500 12.5px ${theme.mono}`,
-    border: `1px solid ${dur === m3 ? theme.accent : theme.card2}`,
-    background: dur === m3 ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "transparent",
-    color: dur === m3 ? theme.accent : theme.muted
-  }}>${m3}m</span>`)}
-          </div>` : ""}
+        <div style=${{ display: "flex", gap: "6px", alignItems: "center" }}>
+          <span style=${{ font: `400 12px ${theme.mono}`, color: theme.muted, marginRight: "2px" }}>duration</span>
+          <input type="number" inputmode="numeric" min="0" step="5" value=${dur || ""}
+            onInput=${(e3) => onDuration(Math.max(0, parseInt(e3.target.value, 10) || 0))}
+            placeholder="—"
+            style=${{
+    width: "72px",
+    background: theme.bg2,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "10px",
+    padding: "8px 10px",
+    font: `400 14px ${theme.mono}`,
+    color: theme.text
+  }} />
+          <span style=${{ font: `400 12px ${theme.mono}`, color: theme.muted }}>min</span>
+        </div>
 
         <div style=${{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
           <span style=${{ font: `400 12px ${theme.mono}`, color: theme.muted, marginRight: "2px" }}>repeat</span>
           ${["none", "daily", "weekly", "monthly", "yearly"].map((r3) => html`
-            <span key=${r3} onClick=${dateStr || r3 === "none" ? () => onRepeat(r3) : void 0} style=${{
+            <span key=${r3} onClick=${dateStr || r3 === "none" ? () => onRepeatChip(r3) : void 0}
+              style=${{
     padding: "6px 12px",
     borderRadius: "999px",
+    userSelect: "none",
     cursor: dateStr || r3 === "none" ? "pointer" : "default",
     font: `500 12.5px ${theme.mono}`,
     opacity: dateStr || r3 === "none" ? 1 : 0.4,
@@ -1684,6 +1864,90 @@ function Detail({ note, onUpdate }) {
     color: rep === r3 ? theme.accent : theme.muted
   }}>${r3}</span>`)}
         </div>
+
+        ${rep === "weekly" && dateStr ? html`
+          <div style=${{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", paddingLeft: "4px" }}>
+            <span style=${{ font: `400 12px ${theme.mono}`, color: theme.muted, marginRight: "2px" }}>on</span>
+            ${WEEK.map((d3, i3) => html`
+              <span key=${i3} onClick=${() => onWeeklyPick(i3)}
+                style=${{
+    width: "30px",
+    height: "30px",
+    borderRadius: "999px",
+    userSelect: "none",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    font: `500 12px ${theme.mono}`,
+    border: `1px solid ${fullRep === `weekly:${i3}` ? theme.accent : theme.card2}`,
+    background: fullRep === `weekly:${i3}` ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "transparent",
+    color: fullRep === `weekly:${i3}` ? theme.accent : theme.muted
+  }}>${d3}</span>`)}
+          </div>` : ""}
+
+        ${rep === "monthly" && dateStr ? html`
+          <div style=${{ display: "flex", flexDirection: "column", gap: "8px", paddingLeft: "4px" }}>
+            <div style=${{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+              <span key="day" onClick=${onMonthlyDay}
+                style=${{
+    padding: "6px 12px",
+    borderRadius: "999px",
+    userSelect: "none",
+    cursor: "pointer",
+    font: `500 12.5px ${theme.mono}`,
+    border: `1px solid ${!monthNth && /^monthly:day:/.test(fullRep) ? theme.accent : theme.card2}`,
+    background: !monthNth && /^monthly:day:/.test(fullRep) ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "transparent",
+    color: !monthNth && /^monthly:day:/.test(fullRep) ? theme.accent : theme.muted
+  }}>Day ${dueDay}</span>
+              <span key="nth" onClick=${() => setMonthNth(true)}
+                style=${{
+    padding: "6px 12px",
+    borderRadius: "999px",
+    userSelect: "none",
+    cursor: "pointer",
+    font: `500 12.5px ${theme.mono}`,
+    border: `1px solid ${monthNth || /^monthly:nth:/.test(fullRep) ? theme.accent : theme.card2}`,
+    background: monthNth || /^monthly:nth:/.test(fullRep) ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "transparent",
+    color: monthNth || /^monthly:nth:/.test(fullRep) ? theme.accent : theme.muted
+  }}>${/^monthly:nth:/.test(fullRep) ? monthlyDescriptor(fullRep) : "Nth weekday"} ›</span>
+            </div>
+            ${monthNth ? html`
+              <div style=${{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                <span style=${{ font: `400 12px ${theme.mono}`, color: theme.muted, marginRight: "2px" }}>which</span>
+                ${ORD.map((o3, i3) => html`
+                  <span key=${i3} onClick=${() => onNthN(i3 + 1)}
+                    style=${{
+    padding: "5px 10px",
+    borderRadius: "999px",
+    userSelect: "none",
+    cursor: "pointer",
+    font: `500 12px ${theme.mono}`,
+    border: `1px solid ${nthN === i3 + 1 ? theme.accent : theme.card2}`,
+    background: nthN === i3 + 1 ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "transparent",
+    color: nthN === i3 + 1 ? theme.accent : theme.muted
+  }}>${o3}</span>`)}
+              </div>
+              <div style=${{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                <span style=${{ font: `400 12px ${theme.mono}`, color: theme.muted, marginRight: "2px" }}>day</span>
+                ${WEEK.map((d3, i3) => html`
+                  <span key=${i3} onClick=${() => onNthW(i3)}
+                    style=${{
+    width: "30px",
+    height: "30px",
+    borderRadius: "999px",
+    userSelect: "none",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    font: `500 12px ${theme.mono}`,
+    border: `1px solid ${nthW === i3 ? theme.accent : theme.card2}`,
+    background: nthW === i3 ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "transparent",
+    color: nthW === i3 ? theme.accent : theme.muted
+  }}>${d3}</span>`)}
+              </div>` : ""}
+          </div>` : ""}
       </div>
 
       <div style=${{ font: `400 13px ${theme.mono}`, color: theme.muted, padding: "0 4px" }}>break it down</div>
