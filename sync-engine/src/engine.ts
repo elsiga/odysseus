@@ -65,7 +65,7 @@ export function createSyncClient(opts: { apiBase?: string; fetchFn?: typeof fetc
   async function applyChange(ch: any): Promise<boolean> {
     const local = await db.notes.get(ch.id)
     if (ch.op === 'delete') {
-      if (!local || local._dirty === 0) { await db.notes.delete(ch.id); return true }
+      if (!local || local._dirty === 0) { await db.notes.delete(ch.id); return !!local }
       return false
     }
     if (local?._dirty === 1) return false            // pending local edit — resolve via push

@@ -6398,7 +6398,7 @@ function createSyncClient(opts = {}) {
     if (ch.op === "delete") {
       if (!local || local._dirty === 0) {
         await db.notes.delete(ch.id);
-        return true;
+        return !!local;
       }
       return false;
     }

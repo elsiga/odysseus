@@ -130,6 +130,45 @@ describe('engine', () => {
     expect((await db.notes.toArray()).length).toBe(3)
     expect(calls).toBe(1)
   })
+
+  it('fires onChanged once on a pull that applies a delete of a note the client has locally', async () => {
+    const server = fakeServer()
+    const c1 = createSyncClient({ fetchFn: server as any })
+    await syncedUpsert({ id: 'd1', title: 'to-delete' })
+    await c1.syncOnce()                                      // server has d1 rev1
+    // fresh client pulls it down, so it's local with _dirty===0
+    await db.notes.clear(); await db.outbox.clear(); await db.meta.clear()
+    const c2 = createSyncClient({ fetchFn: server as any })
+    await c2.syncOnce()
+    expect(await db.notes.get('d1')).toBeTruthy()
+    // a different device deletes d1 server-side — push directly against the
+    // fake server so this client's local copy of d1 is left untouched until
+    // its own next pull applies the delete.
+    await server('http://t/push', {
+      method: 'POST',
+      body: JSON.stringify({ changes: [{ entity: 'note', id: 'd1', op: 'delete', editedAt: new Date().toISOString() }] }),
+    } as any)
+    let calls = 0
+    const c2b = createSyncClient({ fetchFn: server as any, onChanged: () => { calls++ } })
+    await c2b.syncOnce()                                     // pulls + applies the delete
+    expect(await db.notes.get('d1')).toBeUndefined()
+    expect(calls).toBe(1)
+  })
+
+  it('does NOT fire onChanged when the pulled delete targets a note this client never had locally', async () => {
+    const server = fakeServer()
+    // a different device deletes an id this fresh client has never seen —
+    // push directly against the fake server, bypassing any local db.
+    await server('http://t/push', {
+      method: 'POST',
+      body: JSON.stringify({ changes: [{ entity: 'note', id: 'ghost1', op: 'delete', editedAt: new Date().toISOString() }] }),
+    } as any)
+    let calls = 0
+    const c = createSyncClient({ fetchFn: server as any, onChanged: () => { calls++ } })
+    await c.syncOnce()                                       // pulls the delete for an id it never had
+    expect(await db.notes.get('ghost1')).toBeUndefined()
+    expect(calls).toBe(0)
+  })
 })
 
 describe('authHeader + apiBase seam', () => {
