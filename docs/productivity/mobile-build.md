@@ -193,3 +193,17 @@ Web-parity recurrence in the mobile Detail "when" block (weekday for weekly; Day
 6. **Default prefill:** open a task with no date → fields show today / 18:00; leave without touching them → the task still has no due date; touch a field/chip → the due persists.
 7. **Clear:** tap **×** on the date row → the due is removed (no date on reopen and on web).
 8. **Polish:** calendar/clock icons show; no grey rectangle flash when tapping any chip.
+
+## Calendar Slice B — Day view (2026-07-24)
+
+The first calendar view: a scrollable full-day timeline (`mobile/src/screens/Day.ts`) over a pure `mobile/src/calendar.ts` data module (`dayOccurrences` + lane packing). Timed tasks render as duration blocks (overlaps sit side-by-side), all-day tasks in a top strip, recurrences expand onto the right day; the grid auto-scrolls to now with earlier hours faded and a live now-line. Reached from Home's "calendar →" chip; tap a block → the Detail editor. Week + Month are the next slice (their pills render but are inert). **No backend change** — no server redeploy for this slice.
+
+### On-device proof (PENDING)
+1. `adb install -r dist/odysseus.apk`. From Home, tap **calendar →** → the Day view opens, auto-scrolled to now, earlier hours faded, a now-line at the current time.
+2. A task due today at a set time + duration shows as a block of the right height/position; two overlapping tasks sit side-by-side.
+3. A timed task with no duration still shows a tappable default-height block.
+4. An all-day-dated task shows in the top strip.
+5. A weekly/monthly recurring task appears on today when today is an occurrence (and not otherwise).
+6. Tap a block → Detail opens for that task; hardware back returns to the Day view.
+7. `‹ / ›` move to adjacent days (no now-line/fade off today); `today` returns.
+8. `week` / `month` pills are visibly present but inert.
