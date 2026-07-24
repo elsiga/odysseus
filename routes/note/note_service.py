@@ -7,10 +7,10 @@ from core.database import Note
 
 _CREATE_FIELDS = ("title", "content", "note_type", "color", "label", "pinned",
                   "due_date", "source", "session_id", "image_url", "repeat", "sort_order",
-                  "bucket", "urgency", "project", "done")
+                  "bucket", "urgency", "project", "done", "duration_min")
 _UPDATE_FIELDS = ("title", "content", "note_type", "color", "label", "pinned",
                   "archived", "due_date", "image_url", "repeat", "sort_order",
-                  "agent_session_id", "bucket", "urgency", "project", "done")
+                  "agent_session_id", "bucket", "urgency", "project", "done", "duration_min")
 
 
 def _gate(note, owner):
@@ -88,7 +88,7 @@ def toggle_item_record(db, owner, note_id: str, index: int) -> list:
 _WIRE_IN_FIELDS = ("title", "content", "items", "note_type", "color", "label",
                    "pinned", "archived", "due_date", "image_url", "repeat",
                    "sort_order", "source", "session_id", "agent_session_id",
-                   "bucket", "urgency", "project", "done")
+                   "bucket", "urgency", "project", "done", "duration_min")
 
 
 def note_from_wire(record: dict) -> dict:
@@ -113,6 +113,7 @@ def note_to_wire(note: Note) -> dict:
         "agent_session_id": getattr(note, "agent_session_id", None),
         "bucket": note.bucket or "today", "urgency": note.urgency or 0,
         "project": note.project, "done": bool(note.done),
+        "duration_min": getattr(note, "duration_min", None),
         "rev": note.rev,
         "created_at": note.created_at.isoformat() if note.created_at else None,
         "updated_at": note.updated_at.isoformat() if note.updated_at else None,
