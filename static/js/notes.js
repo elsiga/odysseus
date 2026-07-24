@@ -896,6 +896,9 @@ function _checkReminders() {
         const next = _advanceRecurring(note.due_date, note.repeat);
         if (next) {
           note.due_date = next;
+          // Imperative repaint: this mutation used to reach the DOM only via
+          // the now-removed notesRepo.subscribe() Dexie hook.
+          _renderNotes();
           _patchNote(note.id, { due_date: next }).catch(() => {});
           // Don't add to fired — new due_date is in the future
           continue;
@@ -909,6 +912,8 @@ function _checkReminders() {
         const next = _advanceRecurring(note.due_date, note.repeat);
         if (next) {
           note.due_date = next;
+          // Imperative repaint: see note above.
+          _renderNotes();
           _patchNote(note.id, { due_date: next }).catch(() => {});
           continue;
         }
@@ -5349,12 +5354,20 @@ window.notesModule = notesModule;
 if (typeof window !== 'undefined') {
   setTimeout(_initReminders, 3000);
 
-  // Boot the local-first sync client (push outbox, pull remote changes)
-  // and refresh the local store + re-render whenever it (or our own
-  // local writes) change the notes table.
-  const _syncClient = createSyncClient({ apiBase: '/api/sync' });
-  _syncClient.start();
-  notesRepo.subscribe(() => {
-    _fetchNotes().then(() => { if (_open) _renderNotes(); });
+  // Repaint on remote pulls via the engine's post-pull hook (fires once per
+  // pull, only when a remote change actually applied). Replaces the old
+  // notesRepo.subscribe(), whose Dexie hooks fired PRE-COMMIT so the re-read
+  // saw stale data (same bug fixed on mobile in afd0f84). Local echo repaints
+  // imperatively at each mutation site, so it does not depend on this hook.
+  const _syncClient = createSyncClient({
+    apiBase: '/api/sync',
+    onChanged: () => {
+      // Always refresh the local cache; defer the DOM rebuild while a note is
+      // being edited so a background pull can't tear down the open editor.
+      // Ending the edit (save/cancel) calls _renderNotes() itself, painting
+      // the already-refreshed data.
+      _fetchNotes().then(() => { if (_open && _editingId === null) _renderNotes(); });
+    },
   });
+  _syncClient.start();
 }
