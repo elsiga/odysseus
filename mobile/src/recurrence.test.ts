@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeRepeat, simpleRepeat, expandOccurrences } from './recurrence'
+import { normalizeRepeat, simpleRepeat, expandOccurrences, snapToRepeat, monthlyDescriptor } from './recurrence'
 
 const D = (s: string) => new Date(s)
 
@@ -90,5 +90,64 @@ describe('expandOccurrences', () => {
   it('range entirely before the anchor yields nothing', () => {
     expect(expandOccurrences('2026-07-15T09:00', 'daily', D('2026-06-01'), D('2026-06-30')))
       .toEqual([])
+  })
+})
+
+describe('snapToRepeat', () => {
+  it('returns null for none/daily/yearly', () => {
+    const d = new Date(2026, 6, 15, 9, 0)
+    expect(snapToRepeat(d, 'none')).toBeNull()
+    expect(snapToRepeat(d, 'daily')).toBeNull()
+    expect(snapToRepeat(d, 'yearly')).toBeNull()
+  })
+
+  it('weekly: snaps a future anchor forward to the target weekday, preserving time', () => {
+    const cur = new Date(2026, 6, 15, 9, 0)   // Wed 2026-07-15 09:00
+    const now = new Date(2026, 6, 13, 0, 0)   // before the anchor
+    const s = snapToRepeat(cur, 'weekly:1', now)!  // Monday
+    expect([s.getFullYear(), s.getMonth(), s.getDate()]).toEqual([2026, 6, 20]) // next Monday
+    expect(s.getDay()).toBe(1)
+    expect([s.getHours(), s.getMinutes()]).toEqual([9, 0])
+  })
+
+  it('weekly: a matching future anchor stays put', () => {
+    const cur = new Date(2026, 6, 15, 9, 0)   // Wed
+    const now = new Date(2026, 6, 13, 0, 0)
+    const s = snapToRepeat(cur, 'weekly:3', now)! // Wednesday
+    expect(s.getDate()).toBe(15)
+  })
+
+  it('monthly:day snaps forward to the next matching day, preserving time', () => {
+    const cur = new Date(2026, 6, 10, 8, 30)  // 2026-07-10 08:30
+    const now = new Date(2026, 6, 20, 0, 0)   // already past day 10 in July
+    const s = snapToRepeat(cur, 'monthly:day:10', now)!
+    expect([s.getMonth(), s.getDate()]).toEqual([7, 10]) // Aug 10
+    expect([s.getHours(), s.getMinutes()]).toEqual([8, 30])
+  })
+
+  it('monthly:nth snaps forward to the Nth weekday', () => {
+    const cur = new Date(2026, 6, 1, 12, 0)
+    const now = new Date(2026, 6, 20, 0, 0)   // past the 2nd Tue of July
+    const s = snapToRepeat(cur, 'monthly:nth:2:2', now)! // 2nd Tuesday
+    expect([s.getMonth(), s.getDate()]).toEqual([7, 11]) // Aug 11 2026 is the 2nd Tue
+    expect(s.getDay()).toBe(2)
+  })
+})
+
+describe('monthlyDescriptor', () => {
+  it('renders day / nth / last and empty for non-monthly', () => {
+    expect(monthlyDescriptor('monthly:day:24')).toBe('Day 24')
+    expect(monthlyDescriptor('monthly:nth:2:2')).toBe('2nd Tue')
+    expect(monthlyDescriptor('monthly:last:5')).toBe('Last Fri')
+    expect(monthlyDescriptor('weekly:3')).toBe('')
+    expect(monthlyDescriptor('none')).toBe('')
+  })
+})
+
+describe('expandOccurrences weekly off-weekday guard', () => {
+  it('snaps an off-weekday anchor to the target weekday before enumerating', () => {
+    // anchor 2026-07-15 is a Wednesday; weekly:1 = Mondays
+    const occ = expandOccurrences('2026-07-15', 'weekly:1', new Date('2026-07-15'), new Date('2026-08-05T23:59'))
+    expect(occ).toEqual(['2026-07-20', '2026-07-27', '2026-08-03'])
   })
 })

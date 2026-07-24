@@ -100,6 +100,13 @@ export function expandOccurrences(
   }
   const hh = anchor.getHours(), mm = anchor.getMinutes()
   let d: Date | null = new Date(anchor)
+  // Weekly rules: if the anchor's weekday doesn't match, snap the first emitted
+  // occurrence forward to the target weekday (an off-weekday anchor otherwise
+  // leaks through as the first item).
+  if (/^weekly:/.test(norm)) {
+    const twd = parseInt(norm.split(':')[1], 10)
+    if (!isNaN(twd) && d.getDay() !== twd) d.setDate(d.getDate() + ((twd - d.getDay() + 7) % 7))
+  }
   let guard = 10000
   while (d && d <= rangeEnd) {
     if (--guard <= 0) break
@@ -107,4 +114,78 @@ export function expandOccurrences(
     d = stepOnce(d, norm, hh, mm)
   }
   return out
+}
+
+// Snap a chosen datetime FORWARD to the next slot matching a normalized weekly/
+// monthly rule, preserving time-of-day. Anchors to `currentDate` when it is in
+// the future (so a far-future pick isn't dragged back), else to `now`. Returns
+// null for daily/yearly/none. Semantic port of web's _snapToRepeat.
+export function snapToRepeat(currentDate: Date, normRepeat: string, now: Date = new Date()): Date | null {
+  const hh = currentDate.getHours()
+  const mm = currentDate.getMinutes()
+  const nowMs = now.getTime()
+  const anchor = currentDate.getTime() > nowMs ? currentDate : now
+  const parts = normRepeat.split(':')
+  const kind = parts[0]
+  if (kind === 'weekly') {
+    const targetWd = parseInt(parts[1], 10)
+    if (isNaN(targetWd)) return null
+    const d = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate(), hh, mm, 0, 0)
+    const delta = (targetWd - d.getDay() + 7) % 7
+    d.setDate(d.getDate() + delta)
+    if (d.getTime() <= nowMs) d.setDate(d.getDate() + 7)
+    return d
+  }
+  if (kind === 'monthly') {
+    const sub = parts[1]
+    let y = anchor.getFullYear()
+    let m = anchor.getMonth()
+    for (let tries = 0; tries < 14; tries++) {
+      let target: Date
+      if (sub === 'day') {
+        const wantDay = parseInt(parts[2], 10)
+        if (isNaN(wantDay)) return null
+        const lastDay = new Date(y, m + 1, 0).getDate()
+        target = new Date(y, m, Math.min(wantDay, lastDay))
+      } else if (sub === 'nth') {
+        const n = parseInt(parts[2], 10)
+        const wd = parseInt(parts[3], 10)
+        if (isNaN(n) || isNaN(wd)) return null
+        target = nthWeekdayOfMonth(y, m, wd, n)
+      } else if (sub === 'last') {
+        const wd = parseInt(parts[2], 10)
+        if (isNaN(wd)) return null
+        target = lastWeekdayOfMonth(y, m, wd)
+      } else {
+        return null
+      }
+      target.setHours(hh, mm, 0, 0)
+      if (target.getTime() > nowMs && target.getTime() >= anchor.getTime()) return target
+      m++
+      if (m > 11) { m = 0; y++ }
+    }
+    return null
+  }
+  return null
+}
+
+const _ORDINALS = ['1st', '2nd', '3rd', '4th', '5th']
+const _DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+// Compact label for a normalized monthly rule: "Day 24" / "2nd Tue" / "Last Fri".
+// Returns "" for any non-monthly value.
+export function monthlyDescriptor(norm: string): string {
+  const parts = (norm || '').split(':')
+  if (parts[0] !== 'monthly') return ''
+  if (parts[1] === 'day') return `Day ${parts[2]}`
+  if (parts[1] === 'nth') {
+    const n = parseInt(parts[2], 10)
+    const wd = parseInt(parts[3], 10)
+    return `${_ORDINALS[n - 1] || `${n}th`} ${_DAYS[wd].slice(0, 3)}`
+  }
+  if (parts[1] === 'last') {
+    const wd = parseInt(parts[2], 10)
+    return `Last ${_DAYS[wd].slice(0, 3)}`
+  }
+  return ''
 }
