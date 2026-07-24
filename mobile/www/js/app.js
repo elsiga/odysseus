@@ -1363,9 +1363,16 @@ function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary, onTestRem
 }
 
 // src/datetime.ts
+function hasTimeComponent(s3) {
+  return typeof s3 === "string" && /T\d{2}:\d{2}/.test(s3);
+}
 function toLocalDatetimeStr(d3) {
   const p3 = (n3) => String(n3).padStart(2, "0");
   return `${d3.getFullYear()}-${p3(d3.getMonth() + 1)}-${p3(d3.getDate())}T${p3(d3.getHours())}:${p3(d3.getMinutes())}`;
+}
+function toDateOnlyStr(d3) {
+  const p3 = (n3) => String(n3).padStart(2, "0");
+  return `${d3.getFullYear()}-${p3(d3.getMonth() + 1)}-${p3(d3.getDate())}`;
 }
 function parseTimeToken(tok) {
   if (!tok) return null;
@@ -1391,6 +1398,19 @@ function composeDueDate(tok, now) {
   const t4 = parseTimeToken(tok);
   if (!t4) return null;
   return toLocalDatetimeStr(new Date(now.getFullYear(), now.getMonth(), now.getDate(), t4.hh, t4.mm, 0, 0));
+}
+function datePart(due) {
+  if (!due) return "";
+  return due.slice(0, 10);
+}
+function timePart(due) {
+  if (!hasTimeComponent(due)) return "";
+  return due.slice(11, 16);
+}
+function composeWhen(dateStr, timeStr, now) {
+  if (!dateStr && !timeStr) return "";
+  const d3 = dateStr || toDateOnlyStr(now);
+  return timeStr ? `${d3}T${timeStr}` : d3;
 }
 
 // src/screens/Capture.ts
@@ -1508,11 +1528,60 @@ function Project({ project, notes, onToggle, onOpen, onCapture }) {
     </div>`;
 }
 
+// src/recurrence.ts
+function normalizeRepeat(repeat, anchor) {
+  if (!repeat || repeat === "none") return "none";
+  if (repeat === "daily" || repeat === "yearly") return repeat;
+  if (/^(weekly|monthly):/.test(repeat)) return repeat;
+  const wd = anchor.getDay();
+  const n3 = Math.ceil(anchor.getDate() / 7);
+  if (repeat === "weekly") return `weekly:${wd}`;
+  if (repeat === "monthly") return `monthly:day:${anchor.getDate()}`;
+  if (repeat === "monthly_nth_weekday") return `monthly:nth:${n3}:${wd}`;
+  if (repeat === "monthly_last_weekday") return `monthly:last:${wd}`;
+  return repeat;
+}
+function simpleRepeat(repeat) {
+  if (!repeat || repeat === "none") return "none";
+  if (repeat === "daily") return "daily";
+  if (repeat === "yearly") return "yearly";
+  if (/^weekly:/.test(repeat) || repeat === "weekly") return "weekly";
+  if (/^monthly:/.test(repeat) || repeat.startsWith("monthly")) return "monthly";
+  return "none";
+}
+
 // src/screens/Detail.ts
 function Detail({ note, onUpdate }) {
   const [title, setTitle] = d2(note.title || "");
   const [desc, setDesc] = d2(note.content || "");
   const [rows, setRows] = d2(toRows(note.items || []));
+  const [dateStr, setDateStr] = d2(datePart(note.due_date));
+  const [timeStr, setTimeStr] = d2(timePart(note.due_date));
+  const [dur, setDur] = d2(note.duration_min ?? 0);
+  const [rep, setRep] = d2(simpleRepeat(note.repeat));
+  const DURATIONS = [15, 25, 45, 60, 90];
+  function commitWhen(nd, nt, nr) {
+    const due = composeWhen(nd, nt, /* @__PURE__ */ new Date());
+    const repeat = nr === "none" || !due ? "none" : normalizeRepeat(nr, new Date(due));
+    onUpdate({ due_date: due, repeat });
+  }
+  const onDate = (v3) => {
+    setDateStr(v3);
+    commitWhen(v3, timeStr, rep);
+  };
+  const onTime = (v3) => {
+    setTimeStr(v3);
+    commitWhen(dateStr, v3, rep);
+  };
+  const onRepeat = (v3) => {
+    setRep(v3);
+    commitWhen(dateStr, timeStr, v3);
+  };
+  const onDuration = (v3) => {
+    const nv = dur === v3 ? 0 : v3;
+    setDur(nv);
+    onUpdate({ duration_min: nv });
+  };
   function persist(next) {
     const items = toItems(next);
     const nt = nextNoteType(note.note_type, items);
@@ -1553,6 +1622,62 @@ function Detail({ note, onUpdate }) {
     resize: "vertical",
     width: "100%"
   }}></textarea>
+
+      <div style=${{ display: "flex", flexDirection: "column", gap: "10px", padding: "4px 4px 0" }}>
+        <div style=${{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <input type="date" value=${dateStr} onInput=${(e3) => onDate(e3.target.value)}
+            style=${{
+    flex: 1,
+    minWidth: 0,
+    background: theme.bg2,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "10px",
+    padding: "10px 12px",
+    font: `400 14px ${theme.mono}`,
+    color: theme.text
+  }} />
+          <input type="time" value=${timeStr} onInput=${(e3) => onTime(e3.target.value)}
+            style=${{
+    width: "118px",
+    background: theme.bg2,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "10px",
+    padding: "10px 12px",
+    font: `400 14px ${theme.mono}`,
+    color: theme.text
+  }} />
+        </div>
+
+        ${timeStr ? html`
+          <div style=${{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+            <span style=${{ font: `400 12px ${theme.mono}`, color: theme.muted, marginRight: "2px" }}>for</span>
+            ${DURATIONS.map((m3) => html`
+              <span key=${m3} onClick=${() => onDuration(m3)} style=${{
+    padding: "6px 12px",
+    borderRadius: "999px",
+    cursor: "pointer",
+    font: `500 12.5px ${theme.mono}`,
+    border: `1px solid ${dur === m3 ? theme.accent : theme.card2}`,
+    background: dur === m3 ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "transparent",
+    color: dur === m3 ? theme.accent : theme.muted
+  }}>${m3}m</span>`)}
+          </div>` : ""}
+
+        <div style=${{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+          <span style=${{ font: `400 12px ${theme.mono}`, color: theme.muted, marginRight: "2px" }}>repeat</span>
+          ${["none", "daily", "weekly", "monthly", "yearly"].map((r3) => html`
+            <span key=${r3} onClick=${() => onRepeat(r3)} style=${{
+    padding: "6px 12px",
+    borderRadius: "999px",
+    cursor: dateStr || r3 === "none" ? "pointer" : "default",
+    font: `500 12.5px ${theme.mono}`,
+    opacity: dateStr || r3 === "none" ? 1 : 0.4,
+    border: `1px solid ${rep === r3 ? theme.accent : theme.card2}`,
+    background: rep === r3 ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "transparent",
+    color: rep === r3 ? theme.accent : theme.muted
+  }}>${r3}</span>`)}
+        </div>
+      </div>
 
       <div style=${{ font: `400 13px ${theme.mono}`, color: theme.muted, padding: "0 4px" }}>break it down</div>
       ${rows.map((r3) => html`
