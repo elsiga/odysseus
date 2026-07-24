@@ -12,10 +12,11 @@ function stripMeta(row: NoteRow): Record<string, unknown> {
 
 export interface SyncClient { syncOnce(): Promise<void>; start(): void; stop(): void }
 
-export function createSyncClient(opts: { apiBase?: string; fetchFn?: typeof fetch; authHeader?: () => Record<string, string> } = {}): SyncClient {
+export function createSyncClient(opts: { apiBase?: string; fetchFn?: typeof fetch; authHeader?: () => Record<string, string>; onChanged?: () => void } = {}): SyncClient {
   const apiBase = opts.apiBase ?? '/api/sync'
   const fetchFn = opts.fetchFn ?? ((i: any, init?: any) => fetch(i, init))
   const authHeader = opts.authHeader
+  const onChanged = opts.onChanged
   let queue: Promise<void> = Promise.resolve()
   let failures = 0, nextAllowedAt = 0
   let timer: any = null, interval: any = null
@@ -61,25 +62,28 @@ export function createSyncClient(opts: { apiBase?: string; fetchFn?: typeof fetc
     }
   }
 
-  async function applyChange(ch: any): Promise<void> {
+  async function applyChange(ch: any): Promise<boolean> {
     const local = await db.notes.get(ch.id)
     if (ch.op === 'delete') {
-      if (!local || local._dirty === 0) await db.notes.delete(ch.id)
-      return
+      if (!local || local._dirty === 0) { await db.notes.delete(ch.id); return true }
+      return false
     }
-    if (local?._dirty === 1) return                 // pending local edit — resolve via push
-    if (local && ch.rev <= local._baseRev) return    // own echo / stale
+    if (local?._dirty === 1) return false            // pending local edit — resolve via push
+    if (local && ch.rev <= local._baseRev) return false  // own echo / stale
     await db.notes.put({ ...ch.record, _dirty: 0, _baseRev: ch.rev, _editedAt: ch.record.updated_at ?? new Date(0).toISOString() })
+    return true
   }
 
   async function pullOnce(): Promise<void> {
+    let applied = false
     for (;;) {
       const cursor = await getCursor()
       const page = await api(`/pull?cursor=${cursor}&limit=500`)
-      for (const ch of page.changes) await applyChange(ch)
+      for (const ch of page.changes) { if (await applyChange(ch)) applied = true }
       await db.meta.put({ key: 'cursor', value: page.cursor })
       if (!page.hasMore) break
     }
+    if (applied) onChanged?.()
   }
 
   function syncOnce(): Promise<void> {

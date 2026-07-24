@@ -82,6 +82,54 @@ describe('engine', () => {
     await client.syncOnce()                                  // pull returns n2 rev1 (>baseRev 0) but local _dirty → skip
     expect((await db.notes.get('n2'))?.title).toBe('dirty-local')
   })
+
+  it('fires onChanged once after a pull that applies a remote change', async () => {
+    const server = fakeServer()
+    // seed the server with a note via a first client
+    const c1 = createSyncClient({ fetchFn: server as any })
+    await syncedUpsert({ id: 'r1', title: 'from-other-device' })
+    await c1.syncOnce()
+    // fresh client (cursor 0) with a spy — it will pull r1 on first sync
+    await db.notes.clear(); await db.outbox.clear(); await db.meta.clear()
+    let calls = 0
+    const c2 = createSyncClient({ fetchFn: server as any, onChanged: () => { calls++ } })
+    await c2.syncOnce()
+    expect(await db.notes.get('r1')).toBeTruthy()
+    expect(calls).toBe(1)
+  })
+
+  it('does NOT fire onChanged when the pull applies nothing (empty)', async () => {
+    const server = fakeServer()
+    let calls = 0
+    const c = createSyncClient({ fetchFn: server as any, onChanged: () => { calls++ } })
+    await c.syncOnce()   // nothing on the server → empty pull
+    expect(calls).toBe(0)
+  })
+
+  it('does NOT fire onChanged on an all-echo pull (our own just-pushed write)', async () => {
+    const server = fakeServer()
+    let calls = 0
+    const c = createSyncClient({ fetchFn: server as any, onChanged: () => { calls++ } })
+    await syncedUpsert({ id: 'mine', title: 'local' })
+    await c.syncOnce()   // pushes 'mine', then pulls it back as an echo → applyChange skips it
+    expect(await db.notes.get('mine')).toBeTruthy()
+    expect(calls).toBe(0)
+  })
+
+  it('fires onChanged once, not once per change, for a multi-change pull', async () => {
+    const server = fakeServer()
+    const c1 = createSyncClient({ fetchFn: server as any })
+    await syncedUpsert({ id: 'm1', title: 'a' })
+    await syncedUpsert({ id: 'm2', title: 'b' })
+    await syncedUpsert({ id: 'm3', title: 'c' })
+    await c1.syncOnce()
+    await db.notes.clear(); await db.outbox.clear(); await db.meta.clear()
+    let calls = 0
+    const c2 = createSyncClient({ fetchFn: server as any, onChanged: () => { calls++ } })
+    await c2.syncOnce()
+    expect((await db.notes.toArray()).length).toBe(3)
+    expect(calls).toBe(1)
+  })
 })
 
 describe('authHeader + apiBase seam', () => {

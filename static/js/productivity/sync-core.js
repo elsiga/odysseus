@@ -6354,6 +6354,7 @@ function createSyncClient(opts = {}) {
   const apiBase = opts.apiBase ?? "/api/sync";
   const fetchFn = opts.fetchFn ?? ((i, init) => fetch(i, init));
   const authHeader = opts.authHeader;
+  const onChanged = opts.onChanged;
   let queue = Promise.resolve();
   let failures = 0, nextAllowedAt = 0;
   let timer = null, interval = null;
@@ -6395,21 +6396,29 @@ function createSyncClient(opts = {}) {
   async function applyChange(ch) {
     const local = await db.notes.get(ch.id);
     if (ch.op === "delete") {
-      if (!local || local._dirty === 0) await db.notes.delete(ch.id);
-      return;
+      if (!local || local._dirty === 0) {
+        await db.notes.delete(ch.id);
+        return true;
+      }
+      return false;
     }
-    if (local?._dirty === 1) return;
-    if (local && ch.rev <= local._baseRev) return;
+    if (local?._dirty === 1) return false;
+    if (local && ch.rev <= local._baseRev) return false;
     await db.notes.put({ ...ch.record, _dirty: 0, _baseRev: ch.rev, _editedAt: ch.record.updated_at ?? (/* @__PURE__ */ new Date(0)).toISOString() });
+    return true;
   }
   async function pullOnce() {
+    let applied = false;
     for (; ; ) {
       const cursor = await getCursor();
       const page = await api(`/pull?cursor=${cursor}&limit=500`);
-      for (const ch of page.changes) await applyChange(ch);
+      for (const ch of page.changes) {
+        if (await applyChange(ch)) applied = true;
+      }
       await db.meta.put({ key: "cursor", value: page.cursor });
       if (!page.hasMore) break;
     }
+    if (applied) onChanged?.();
   }
   function syncOnce() {
     const run = queue.then(async () => {
