@@ -3,6 +3,7 @@ export interface NoteRec {
   items?: Array<{ text: string; done: boolean } & Record<string, unknown>> | null;
   done?: boolean; archived?: boolean; bucket?: string; urgency?: number;
   project?: string | null; sort_order?: number; due_date?: string | null;
+  repeat?: string; duration_min?: number | null;
   // Legacy web note types ('todo', 'goal', …) must round-trip through this
   // field untouched by mobile edits — see subtasks.ts#nextNoteType.
   note_type?: string;

@@ -1362,6 +1362,37 @@ function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary, onTestRem
     </div>`;
 }
 
+// src/datetime.ts
+function toLocalDatetimeStr(d3) {
+  const p3 = (n3) => String(n3).padStart(2, "0");
+  return `${d3.getFullYear()}-${p3(d3.getMonth() + 1)}-${p3(d3.getDate())}T${p3(d3.getHours())}:${p3(d3.getMinutes())}`;
+}
+function parseTimeToken(tok) {
+  if (!tok) return null;
+  const t4 = tok.trim().toLowerCase();
+  let m3 = /^(\d{1,2}):(\d{2})$/.exec(t4);
+  if (m3) {
+    const hh = +m3[1], mm = +m3[2];
+    return hh > 23 || mm > 59 ? null : { hh, mm };
+  }
+  m3 = /^(\d{1,2})(?::(\d{2}))?(am|pm)$/.exec(t4);
+  if (m3) {
+    let hh = +m3[1];
+    const mm = m3[2] ? +m3[2] : 0;
+    const ap = m3[3];
+    if (hh < 1 || hh > 12 || mm > 59) return null;
+    if (ap === "am") hh = hh === 12 ? 0 : hh;
+    else hh = hh === 12 ? 12 : hh + 12;
+    return { hh, mm };
+  }
+  return null;
+}
+function composeDueDate(tok, now) {
+  const t4 = parseTimeToken(tok);
+  if (!t4) return null;
+  return toLocalDatetimeStr(new Date(now.getFullYear(), now.getMonth(), now.getDate(), t4.hh, t4.mm, 0, 0));
+}
+
 // src/screens/Capture.ts
 var SEG_COLOR = {
   text: theme.text,
@@ -1383,7 +1414,7 @@ function Capture({ onSave, onClose, defaultProject }) {
       bucket,
       urgency: parsed.urgency,
       project: parsed.project || defaultProject || null,
-      due_date: parsed.dueTime
+      due_date: composeDueDate(parsed.dueTime, /* @__PURE__ */ new Date())
     });
     onClose();
   }

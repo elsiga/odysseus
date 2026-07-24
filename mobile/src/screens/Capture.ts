@@ -2,6 +2,7 @@ import { html, useState } from '../html'
 import { theme as T } from '../theme'
 import { BottomSheet, BucketChip, PrimaryButton } from '../components'
 import { parseCapture } from '../notes'
+import { composeDueDate } from '../datetime'
 
 const SEG_COLOR: Record<string, string> = {
   text: T.text, project: T.accent, bucket: '#7FB3FF', time: '#8FD69A', urgency: '#FFC15E',
@@ -20,7 +21,7 @@ export function Capture({ onSave, onClose, defaultProject }:
     if (!canSave) return
     await onSave({
       title: parsed.title, bucket, urgency: parsed.urgency,
-      project: parsed.project || defaultProject || null, due_date: parsed.dueTime,
+      project: parsed.project || defaultProject || null, due_date: composeDueDate(parsed.dueTime, new Date()),
     })
     onClose()
   }
