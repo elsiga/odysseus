@@ -6,6 +6,7 @@ import { Capture } from './screens/Capture'
 import { Library } from './screens/Library'
 import { Project } from './screens/Project'
 import { Detail } from './screens/Detail'
+import { Day } from './screens/Day'
 import { scheduleTestNotification } from './notify'
 import { pushRoute, popRoute, shouldExit, type Route } from './nav'
 import { useBackButton, exitApp } from './backButton'
@@ -42,11 +43,13 @@ function Root() {
     return html`<${Home} notes=${store.notes} status=${store.status}
       onToggle=${store.toggle} onOpen=${openDetail}
       onCapture=${() => navigate({ name: 'capture' })} onLibrary=${() => navigate({ name: 'library' })}
+      onDay=${() => navigate({ name: 'day' })}
       onTestReminder=${scheduleTestNotification} />`
   if (route.name === 'capture')
     return html`
       <${Home} notes=${store.notes} status=${store.status} onToggle=${store.toggle} onOpen=${openDetail}
         onCapture=${() => navigate({ name: 'capture' })} onLibrary=${() => navigate({ name: 'library' })}
+        onDay=${() => navigate({ name: 'day' })}
         onTestReminder=${scheduleTestNotification} />
       <${Capture} onSave=${store.addTask} onClose=${back} defaultProject=${route.project} />`
   if (route.name === 'library')
@@ -64,6 +67,9 @@ function Root() {
     if (!n) return html`<p style="padding:26px 20px">task not found — press back</p>`
     return html`<${Detail} note=${n} onUpdate=${(patch: any) => store.update(n.id, patch)} />`
   }
+  if (route.name === 'day')
+    return html`<${Day} notes=${store.notes} onOpen=${openDetail}
+      onHome=${() => navigate({ name: 'home' })} initialDate=${route.date} />`
   return html`<p style="padding:24px">…</p>`
 }
 

@@ -1281,7 +1281,7 @@ function projectsOf(notes) {
 }
 
 // src/screens/Home.ts
-function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary, onTestReminder }) {
+function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary, onDay, onTestReminder }) {
   const [suggIdx, setSuggIdx] = d2(0);
   const { visible, overflow } = todayView(notes);
   const counts = bucketCounts(notes);
@@ -1335,10 +1335,11 @@ function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary, onTestRem
             ${overflow} more in today — <span style=${{ color: theme.text }}>move some to soon?</span></div>` : ""}
       </div>
 
-      <div style=${{ display: "flex", gap: "8px", padding: "0 2px" }}>
+      <div style=${{ display: "flex", gap: "8px", padding: "0 2px", flexWrap: "wrap" }}>
         <${BucketChip} label=${`soon \xB7 ${counts.soon}`} onClick=${onLibrary} />
         <${BucketChip} label=${`someday \xB7 ${counts.someday}`} onClick=${onLibrary} />
         <${BucketChip} label="projects" onClick=${onLibrary} />
+        <${BucketChip} label="calendar →" onClick=${onDay} />
       </div>
 
       <div onClick=${onCapture}
@@ -1561,6 +1562,75 @@ function simpleRepeat(repeat) {
   if (/^weekly:/.test(repeat) || repeat === "weekly") return "weekly";
   if (/^monthly:/.test(repeat) || repeat.startsWith("monthly")) return "monthly";
   return "none";
+}
+function stepOnce(d3, norm, hh, mm) {
+  if (norm === "daily") {
+    const n3 = new Date(d3);
+    n3.setDate(n3.getDate() + 1);
+    return n3;
+  }
+  if (norm === "yearly") {
+    const n3 = new Date(d3);
+    n3.setFullYear(n3.getFullYear() + 1);
+    return n3;
+  }
+  const parts = norm.split(":");
+  const kind = parts[0];
+  if (kind === "weekly") {
+    const targetWd = parseInt(parts[1], 10);
+    const n3 = new Date(d3);
+    let delta = (targetWd - n3.getDay() + 7) % 7;
+    if (delta === 0) delta = 7;
+    n3.setDate(n3.getDate() + delta);
+    n3.setHours(hh, mm, 0, 0);
+    return n3;
+  }
+  if (kind === "monthly") {
+    const sub = parts[1];
+    const ny = d3.getFullYear() + (d3.getMonth() === 11 ? 1 : 0);
+    const nm = (d3.getMonth() + 1) % 12;
+    let target;
+    if (sub === "day") {
+      const wantDay = parseInt(parts[2], 10);
+      const lastDay = new Date(ny, nm + 1, 0).getDate();
+      target = new Date(ny, nm, Math.min(wantDay, lastDay));
+    } else if (sub === "nth") {
+      target = nthWeekdayOfMonth(ny, nm, parseInt(parts[3], 10), parseInt(parts[2], 10));
+    } else if (sub === "last") {
+      target = lastWeekdayOfMonth(ny, nm, parseInt(parts[2], 10));
+    } else {
+      return null;
+    }
+    target.setHours(hh, mm, 0, 0);
+    return target;
+  }
+  return null;
+}
+function expandOccurrences(dueDate, repeat, rangeStart, rangeEnd) {
+  if (!dueDate) return [];
+  const anchor = new Date(dueDate);
+  if (isNaN(anchor.getTime())) return [];
+  const timed = /T\d{2}:\d{2}/.test(dueDate);
+  const fmt = (d4) => timed ? toLocalDatetimeStr(d4) : toDateOnlyStr(d4);
+  const norm = normalizeRepeat(repeat, anchor);
+  const out = [];
+  if (norm === "none") {
+    if (anchor >= rangeStart && anchor <= rangeEnd) out.push(fmt(anchor));
+    return out;
+  }
+  const hh = anchor.getHours(), mm = anchor.getMinutes();
+  let d3 = new Date(anchor);
+  if (/^weekly:/.test(norm)) {
+    const twd = parseInt(norm.split(":")[1], 10);
+    if (!isNaN(twd) && d3.getDay() !== twd) d3.setDate(d3.getDate() + (twd - d3.getDay() + 7) % 7);
+  }
+  let guard = 1e4;
+  while (d3 && d3 <= rangeEnd) {
+    if (--guard <= 0) break;
+    if (d3 >= rangeStart) out.push(fmt(d3));
+    d3 = stepOnce(d3, norm, hh, mm);
+  }
+  return out;
 }
 function snapToRepeat(currentDate, normRepeat, now = /* @__PURE__ */ new Date()) {
   const hh = currentDate.getHours();
@@ -2005,6 +2075,215 @@ function Detail({ note, onUpdate }) {
     </div>`;
 }
 
+// src/calendar.ts
+var DEFAULT_DURATION_MIN = 30;
+function packLanes(occs) {
+  const sorted = [...occs].sort((a3, b2) => a3.startMin - b2.startMin || a3.endMin - b2.endMin);
+  const laneEnds = [];
+  for (const o3 of sorted) {
+    let lane = laneEnds.findIndex((end) => end <= o3.startMin);
+    if (lane === -1) {
+      lane = laneEnds.length;
+      laneEnds.push(o3.endMin);
+    } else laneEnds[lane] = o3.endMin;
+    o3.lane = lane;
+  }
+  let i3 = 0;
+  while (i3 < sorted.length) {
+    let j3 = i3, maxEnd = sorted[i3].endMin, maxLane = sorted[i3].lane;
+    while (j3 + 1 < sorted.length && sorted[j3 + 1].startMin < maxEnd) {
+      j3++;
+      maxEnd = Math.max(maxEnd, sorted[j3].endMin);
+      maxLane = Math.max(maxLane, sorted[j3].lane);
+    }
+    const laneCount = maxLane + 1;
+    for (let k3 = i3; k3 <= j3; k3++) sorted[k3].laneCount = laneCount;
+    i3 = j3 + 1;
+  }
+  return sorted;
+}
+function dayOccurrences(notes, date) {
+  const target = toDateOnlyStr(date);
+  const lo = new Date(date.getFullYear(), date.getMonth(), date.getDate() - 1, 0, 0, 0, 0);
+  const hi = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1, 23, 59, 59, 999);
+  const allDay = [];
+  const timed = [];
+  for (const n3 of notes) {
+    if (!n3.due_date) continue;
+    const recurring = !!n3.repeat && n3.repeat !== "none";
+    const occs = recurring ? expandOccurrences(n3.due_date, n3.repeat, lo, hi).filter((o3) => datePart(o3) === target) : datePart(n3.due_date) === target ? [n3.due_date] : [];
+    for (const occ of occs) {
+      const base = { noteId: n3.id, title: n3.title || "", done: !!n3.done, recurring };
+      if (!hasTimeComponent(occ)) {
+        allDay.push({ ...base, startMin: null, durationMin: 0 });
+        continue;
+      }
+      const hm = timePart(occ);
+      const startMin = +hm.slice(0, 2) * 60 + +hm.slice(3, 5);
+      const durationMin = n3.duration_min || DEFAULT_DURATION_MIN;
+      const endMin = Math.min(startMin + durationMin, 1440);
+      timed.push({ ...base, startMin, durationMin, endMin, lane: 0, laneCount: 1 });
+    }
+  }
+  return { allDay, timed: packLanes(timed) };
+}
+
+// src/screens/Day.ts
+var HOUR_PX = 56;
+var PX_PER_MIN = HOUR_PX / 60;
+var MIN_BLOCK_PX = 30;
+var GUTTER = 52;
+var GAP = 4;
+var pad = (n3) => String(n3).padStart(2, "0");
+var hhmm = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
+function Day({ notes, onOpen, onHome, initialDate }) {
+  const [viewDate, setViewDate] = d2(() => initialDate ? /* @__PURE__ */ new Date(`${initialDate}T00:00`) : /* @__PURE__ */ new Date());
+  const scrollRef = A2(null);
+  const now = /* @__PURE__ */ new Date();
+  const isToday = toDateOnlyStr(viewDate) === toDateOnlyStr(now);
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const { allDay, timed } = dayOccurrences(notes, viewDate);
+  h2(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const focusMin = isToday ? nowMin : 8 * 60;
+    el.scrollTop = Math.max(0, focusMin * PX_PER_MIN - 120);
+  }, [toDateOnlyStr(viewDate)]);
+  const stepDay = (delta) => setViewDate((d3) => new Date(d3.getFullYear(), d3.getMonth(), d3.getDate() + delta));
+  const open = (noteId) => {
+    const n3 = notes.find((x2) => x2.id === noteId);
+    if (n3) onOpen(n3);
+  };
+  const title = isToday ? "Today's shape" : viewDate.toLocaleDateString("en", { weekday: "long", month: "short", day: "numeric" });
+  const pill = (label, active, inert) => html`
+    <span style=${{
+    padding: "8px 16px",
+    borderRadius: "999px",
+    userSelect: "none",
+    border: `1px solid ${active ? "color-mix(in srgb, var(--accent) 40%, transparent)" : theme.card2}`,
+    background: active ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "transparent",
+    font: `${active ? 500 : 400} 12.5px ${theme.mono}`,
+    color: active ? theme.accent : theme.muted,
+    opacity: inert ? 0.4 : 1,
+    cursor: inert ? "default" : "pointer"
+  }}>${label}</span>`;
+  return html`
+    <div style=${{ height: "100vh", display: "flex", flexDirection: "column", gap: "12px", padding: "26px 20px 8px", boxSizing: "border-box" }}>
+      <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 4px" }}>
+        <span style=${{ font: `700 21px ${theme.mono}` }}>${title}</span>
+        <span onClick=${onHome} style=${{ font: `400 13px ${theme.mono}`, color: theme.muted, cursor: "pointer", padding: "6px" }}>← home</span>
+      </div>
+
+      <div style=${{ display: "flex", gap: "8px", alignItems: "center", padding: "0 2px" }}>
+        ${pill("day", true, false)}
+        ${pill("week", false, true)}
+        ${pill("month", false, true)}
+        <div style=${{ marginLeft: "auto", display: "flex", gap: "4px", alignItems: "center" }}>
+          <span onClick=${() => stepDay(-1)} style=${{ font: `400 17px ${theme.mono}`, color: theme.muted, cursor: "pointer", padding: "2px 8px" }}>‹</span>
+          <span onClick=${() => setViewDate(/* @__PURE__ */ new Date())} style=${{ font: `400 12.5px ${theme.mono}`, color: theme.muted, cursor: "pointer", padding: "2px 6px" }}>today</span>
+          <span onClick=${() => stepDay(1)} style=${{ font: `400 17px ${theme.mono}`, color: theme.muted, cursor: "pointer", padding: "2px 8px" }}>›</span>
+        </div>
+      </div>
+
+      ${allDay.length ? html`
+        <div style=${{ display: "flex", gap: "6px", flexWrap: "wrap", padding: "0 2px" }}>
+          ${allDay.map((o3) => html`
+            <span key=${o3.noteId} onClick=${() => open(o3.noteId)}
+              style=${{
+    padding: "6px 12px",
+    borderRadius: "999px",
+    background: theme.card,
+    border: `1px solid ${theme.border}`,
+    font: `400 12.5px ${theme.mono}`,
+    color: o3.done ? theme.muted : theme.text,
+    cursor: "pointer",
+    userSelect: "none",
+    textDecoration: o3.done ? "line-through" : "none"
+  }}>${o3.recurring ? "\u21BB " : ""}${o3.title || "Untitled"}</span>`)}
+        </div>` : ""}
+
+      <div ref=${scrollRef} style=${{ flex: 1, overflowY: "auto", position: "relative" }}>
+        <div style=${{ position: "relative", height: `${24 * HOUR_PX}px` }}>
+          ${Array.from({ length: 24 }, (_2, h3) => html`
+            <div key=${"r" + h3} style=${{ position: "absolute", top: `${h3 * HOUR_PX}px`, left: `${GUTTER}px`, right: 0, height: "1px", background: theme.card2 }}></div>
+            <div key=${"l" + h3} style=${{
+    position: "absolute",
+    top: `${h3 * HOUR_PX - 6}px`,
+    left: 0,
+    width: `${GUTTER - 8}px`,
+    textAlign: "right",
+    font: `400 11px ${theme.mono}`,
+    color: theme.muted
+  }}>${h3 === 0 ? "" : hhmm(h3 * 60)}</div>`)}
+
+          ${timed.map((o3) => html`
+            <div key=${o3.noteId + ":" + o3.startMin} onClick=${() => open(o3.noteId)}
+              style=${{
+    position: "absolute",
+    top: `${o3.startMin * PX_PER_MIN}px`,
+    height: `${Math.max((o3.endMin - o3.startMin) * PX_PER_MIN, MIN_BLOCK_PX)}px`,
+    left: `calc(${GUTTER}px + ${o3.lane} * (100% - ${GUTTER}px) / ${o3.laneCount})`,
+    width: `calc((100% - ${GUTTER}px) / ${o3.laneCount} - ${GAP}px)`,
+    background: theme.card,
+    border: `1px solid ${o3.done ? theme.border : theme.accent}`,
+    borderRadius: "10px",
+    padding: "6px 9px",
+    boxSizing: "border-box",
+    overflow: "hidden",
+    cursor: "pointer",
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px"
+  }}>
+              <span style=${{
+    font: `600 12.5px ${theme.mono}`,
+    color: o3.done ? theme.muted : theme.text,
+    textDecoration: o3.done ? "line-through" : "none",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis"
+  }}>
+                ${o3.recurring ? "\u21BB " : ""}${o3.title || "Untitled"}</span>
+              <span style=${{ font: `400 10.5px ${theme.mono}`, color: theme.muted }}>${hhmm(o3.startMin)}–${hhmm(o3.endMin)}</span>
+            </div>`)}
+
+          ${isToday ? html`
+            <div style=${{
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: `${nowMin * PX_PER_MIN}px`,
+    background: theme.bg,
+    opacity: 0.55,
+    pointerEvents: "none"
+  }}></div>
+            <div style=${{ position: "absolute", top: `${nowMin * PX_PER_MIN}px`, left: `${GUTTER}px`, right: 0, height: "1px", background: theme.accent }}></div>
+            <div style=${{
+    position: "absolute",
+    top: `${nowMin * PX_PER_MIN - 6}px`,
+    left: 0,
+    width: `${GUTTER - 6}px`,
+    textAlign: "right",
+    font: `400 10px ${theme.mono}`,
+    color: theme.accent
+  }}>${hhmm(nowMin)}</div>` : ""}
+
+          ${!allDay.length && !timed.length ? html`
+            <div style=${{
+    position: "absolute",
+    top: "38%",
+    left: 0,
+    right: 0,
+    textAlign: "center",
+    font: `italic 400 13px ${theme.mono}`,
+    color: theme.muted
+  }}>nothing scheduled</div>` : ""}
+        </div>
+      </div>
+    </div>`;
+}
+
 // src/notify.ts
 async function scheduleTestNotification() {
   const w3 = window;
@@ -2031,6 +2310,8 @@ function routeKey(r3) {
       return `project:${r3.project}`;
     case "detail":
       return `detail:${r3.id}`;
+    case "day":
+      return `day:${r3.date ?? ""}`;
     default:
       return r3.name;
   }
@@ -2121,11 +2402,13 @@ function Root() {
     return html`<${Home} notes=${store.notes} status=${store.status}
       onToggle=${store.toggle} onOpen=${openDetail}
       onCapture=${() => navigate({ name: "capture" })} onLibrary=${() => navigate({ name: "library" })}
+      onDay=${() => navigate({ name: "day" })}
       onTestReminder=${scheduleTestNotification} />`;
   if (route.name === "capture")
     return html`
       <${Home} notes=${store.notes} status=${store.status} onToggle=${store.toggle} onOpen=${openDetail}
         onCapture=${() => navigate({ name: "capture" })} onLibrary=${() => navigate({ name: "library" })}
+        onDay=${() => navigate({ name: "day" })}
         onTestReminder=${scheduleTestNotification} />
       <${Capture} onSave=${store.addTask} onClose=${back} defaultProject=${route.project} />`;
   if (route.name === "library")
@@ -2141,6 +2424,9 @@ function Root() {
     if (!n3) return html`<p style="padding:26px 20px">task not found — press back</p>`;
     return html`<${Detail} note=${n3} onUpdate=${(patch) => store.update(n3.id, patch)} />`;
   }
+  if (route.name === "day")
+    return html`<${Day} notes=${store.notes} onOpen=${openDetail}
+      onHome=${() => navigate({ name: "home" })} initialDate=${route.date} />`;
   return html`<p style="padding:24px">…</p>`;
 }
 function TokenGate({ onSave }) {

@@ -4,9 +4,9 @@ import { TaskRow, BucketChip, PrimaryButton } from '../components'
 import { todayView, bucketCounts, pickSuggestion } from '../tasks'
 import type { NoteRec } from '../notes'
 
-export function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary, onTestReminder }:
+export function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary, onDay, onTestReminder }:
   { notes: NoteRec[]; status: string; onToggle: (n: NoteRec) => void; onOpen: (n: NoteRec) => void;
-    onCapture: () => void; onLibrary: () => void; onTestReminder?: () => void }) {
+    onCapture: () => void; onLibrary: () => void; onDay: () => void; onTestReminder?: () => void }) {
   const [suggIdx, setSuggIdx] = useState(0)
   const { visible, overflow } = todayView(notes)
   const counts = bucketCounts(notes)
@@ -49,10 +49,11 @@ export function Home({ notes, status, onToggle, onOpen, onCapture, onLibrary, on
             ${overflow} more in today — <span style=${{ color: T.text }}>move some to soon?</span></div>` : ''}
       </div>
 
-      <div style=${{ display: 'flex', gap: '8px', padding: '0 2px' }}>
+      <div style=${{ display: 'flex', gap: '8px', padding: '0 2px', flexWrap: 'wrap' }}>
         <${BucketChip} label=${`soon · ${counts.soon}`} onClick=${onLibrary} />
         <${BucketChip} label=${`someday · ${counts.someday}`} onClick=${onLibrary} />
         <${BucketChip} label="projects" onClick=${onLibrary} />
+        <${BucketChip} label="calendar →" onClick=${onDay} />
       </div>
 
       <div onClick=${onCapture}
