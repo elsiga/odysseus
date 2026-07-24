@@ -15,7 +15,7 @@ export function Detail({ note, onUpdate }:
   const [rows, setRows] = useState<Row[]>(toRows(note.items || []))
 
   const initDate = datePart(note.due_date) || toDateOnlyStr(new Date())
-  const initTime = timePart(note.due_date) || '18:00'
+  const initTime = note.due_date ? timePart(note.due_date) : '18:00'
   const [dateStr, setDateStr] = useState(initDate)
   const [timeStr, setTimeStr] = useState(initTime)
   const [dur, setDur] = useState<number>(note.duration_min ?? 0)

@@ -1639,7 +1639,7 @@ function Detail({ note, onUpdate }) {
   const [desc, setDesc] = d2(note.content || "");
   const [rows, setRows] = d2(toRows(note.items || []));
   const initDate = datePart(note.due_date) || toDateOnlyStr(/* @__PURE__ */ new Date());
-  const initTime = timePart(note.due_date) || "18:00";
+  const initTime = note.due_date ? timePart(note.due_date) : "18:00";
   const [dateStr, setDateStr] = d2(initDate);
   const [timeStr, setTimeStr] = d2(initTime);
   const [dur, setDur] = d2(note.duration_min ?? 0);
