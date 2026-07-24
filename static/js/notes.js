@@ -898,7 +898,7 @@ function _checkReminders() {
           note.due_date = next;
           // Imperative repaint: this mutation used to reach the DOM only via
           // the now-removed notesRepo.subscribe() Dexie hook.
-          _renderNotes();
+          if (_editingId === null) _renderNotes();
           _patchNote(note.id, { due_date: next }).catch(() => {});
           // Don't add to fired — new due_date is in the future
           continue;
@@ -913,7 +913,7 @@ function _checkReminders() {
         if (next) {
           note.due_date = next;
           // Imperative repaint: see note above.
-          _renderNotes();
+          if (_editingId === null) _renderNotes();
           _patchNote(note.id, { due_date: next }).catch(() => {});
           continue;
         }
