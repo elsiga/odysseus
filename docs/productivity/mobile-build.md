@@ -179,3 +179,17 @@ Adds `Note.duration_min` (nullable int; **redeploy the server** — `docker comp
 3. In Detail set a **date** (native picker), a **time**, a **duration** chip (e.g. 45m), and **repeat = Weekly** → reopen: all persist.
 4. On web, the same note shows the due date + a recurring (↻) marker; the recurrence stored is `weekly:<weekday>` (verify in the live DB or via the web reminder behavior).
 5. Clear the date in Detail → it persists as cleared (task has no due date on reopen and on web).
+
+## Calendar Slice A.1 — recurrence authoring + when-block polish (2026-07-24)
+
+Web-parity recurrence in the mobile Detail "when" block (weekday for weekly; Day-N / Nth-weekday for monthly, with due-date snapping), a typable duration field, a prefilled today/18:00 default that persists only on interaction, calendar/clock icons, and a global tap-highlight fix. Engine gained `snapToRepeat` + `monthlyDescriptor`. **No backend change** — no server redeploy needed for this slice (the `duration_min` column shipped with Slice A).
+
+### On-device proof (PENDING)
+1. `adb install -r dist/odysseus.apk`, open a task in Detail.
+2. **Deadline sync:** set the date to **today** and time **18:30** → on `https://chat.elsiga.ch` the task shows the 🔔 bell with today 18:30.
+3. **Weekly:** Repeat = Weekly → pick **Monday** while the date is a non-Monday → the due date snaps to the next Monday; web shows "Weekly on Mondays ↻".
+4. **Monthly Nth:** Repeat = Monthly → **Nth weekday** → **2nd** / **Tuesday** → web shows "Monthly on 2nd Tuesday".
+5. **Duration:** type a custom value (e.g. 37) → reopen: it persists.
+6. **Default prefill:** open a task with no date → fields show today / 18:00; leave without touching them → the task still has no due date; touch a field/chip → the due persists.
+7. **Clear:** tap **×** on the date row → the due is removed (no date on reopen and on web).
+8. **Polish:** calendar/clock icons show; no grey rectangle flash when tapping any chip.
