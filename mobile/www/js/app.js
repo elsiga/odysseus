@@ -1559,10 +1559,15 @@ function Detail({ note, onUpdate }) {
   const [timeStr, setTimeStr] = d2(timePart(note.due_date));
   const [dur, setDur] = d2(note.duration_min ?? 0);
   const [rep, setRep] = d2(simpleRepeat(note.repeat));
+  const rep0 = simpleRepeat(note.repeat);
+  const repeat0 = normalizeRepeat(note.repeat, note.due_date ? new Date(note.due_date) : /* @__PURE__ */ new Date());
   const DURATIONS = [15, 25, 45, 60, 90];
   function commitWhen(nd, nt, nr) {
     const due = composeWhen(nd, nt, /* @__PURE__ */ new Date());
-    const repeat = nr === "none" || !due ? "none" : normalizeRepeat(nr, new Date(due));
+    let repeat;
+    if (nr === "none" || !due) repeat = "none";
+    else if (nr === rep0 && /^monthly:(nth|last):/.test(repeat0)) repeat = repeat0;
+    else repeat = normalizeRepeat(nr, new Date(due));
     onUpdate({ due_date: due, repeat });
   }
   const onDate = (v3) => {
@@ -1570,8 +1575,10 @@ function Detail({ note, onUpdate }) {
     commitWhen(v3, timeStr, rep);
   };
   const onTime = (v3) => {
+    const nd = v3 && !dateStr ? toDateOnlyStr(/* @__PURE__ */ new Date()) : dateStr;
     setTimeStr(v3);
-    commitWhen(dateStr, v3, rep);
+    if (nd !== dateStr) setDateStr(nd);
+    commitWhen(nd, v3, rep);
   };
   const onRepeat = (v3) => {
     setRep(v3);
@@ -1666,7 +1673,7 @@ function Detail({ note, onUpdate }) {
         <div style=${{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
           <span style=${{ font: `400 12px ${theme.mono}`, color: theme.muted, marginRight: "2px" }}>repeat</span>
           ${["none", "daily", "weekly", "monthly", "yearly"].map((r3) => html`
-            <span key=${r3} onClick=${() => onRepeat(r3)} style=${{
+            <span key=${r3} onClick=${dateStr || r3 === "none" ? () => onRepeat(r3) : void 0} style=${{
     padding: "6px 12px",
     borderRadius: "999px",
     cursor: dateStr || r3 === "none" ? "pointer" : "default",

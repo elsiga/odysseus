@@ -2,7 +2,7 @@ import { html, useState } from '../html'
 import { theme as T } from '../theme'
 import { nextNoteType, nextRid, toRows, toItems, type Row } from '../subtasks'
 import type { NoteRec } from '../notes'
-import { datePart, timePart, composeWhen } from '../datetime'
+import { datePart, timePart, composeWhen, toDateOnlyStr } from '../datetime'
 import { normalizeRepeat, simpleRepeat } from '../recurrence'
 
 export function Detail({ note, onUpdate }:
@@ -16,19 +16,37 @@ export function Detail({ note, onUpdate }:
   const [dur, setDur] = useState<number>(note.duration_min ?? 0)
   const [rep, setRep] = useState<string>(simpleRepeat(note.repeat))
 
+  // Original recurrence, captured once. The mobile chips can only express the
+  // coarse label (simpleRepeat collapses monthly:nth/monthly:last → 'monthly'),
+  // so when the user edits the date/time WITHOUT changing the recurrence
+  // selection we must carry the web-authored complex form through unchanged
+  // rather than let normalizeRepeat downgrade it to monthly:day:N.
+  const rep0 = simpleRepeat(note.repeat)
+  const repeat0 = normalizeRepeat(note.repeat, note.due_date ? new Date(note.due_date) : new Date())
+
   const DURATIONS = [15, 25, 45, 60, 90]
 
   // Persist due_date + (re-derived) repeat together: when the date moves, a
   // weekly/monthly rule must re-derive its weekday / day-of-month from the new
   // date. composeWhen returns "" (not null) so a cleared date persists through
-  // update_note_record (which skips None).
+  // update_note_record (which skips None). When the recurrence selection is
+  // unchanged from the note's original AND that original was a monthly:nth/last
+  // form, carry it through unchanged instead of re-deriving (see rep0/repeat0).
   function commitWhen(nd: string, nt: string, nr: string) {
     const due = composeWhen(nd, nt, new Date())
-    const repeat = nr === 'none' || !due ? 'none' : normalizeRepeat(nr, new Date(due))
+    let repeat: string
+    if (nr === 'none' || !due) repeat = 'none'
+    else if (nr === rep0 && /^monthly:(nth|last):/.test(repeat0)) repeat = repeat0
+    else repeat = normalizeRepeat(nr, new Date(due))
     onUpdate({ due_date: due, repeat })
   }
   const onDate = (v: string) => { setDateStr(v); commitWhen(v, timeStr, rep) }
-  const onTime = (v: string) => { setTimeStr(v); commitWhen(dateStr, v, rep) }
+  const onTime = (v: string) => {
+    const nd = v && !dateStr ? toDateOnlyStr(new Date()) : dateStr
+    setTimeStr(v)
+    if (nd !== dateStr) setDateStr(nd)
+    commitWhen(nd, v, rep)
+  }
   const onRepeat = (v: string) => { setRep(v); commitWhen(dateStr, timeStr, v) }
   const onDuration = (v: number) => { const nv = dur === v ? 0 : v; setDur(nv); onUpdate({ duration_min: nv }) }
 
@@ -87,7 +105,7 @@ export function Detail({ note, onUpdate }:
         <div style=${{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
           <span style=${{ font: `400 12px ${T.mono}`, color: T.muted, marginRight: '2px' }}>repeat</span>
           ${(['none', 'daily', 'weekly', 'monthly', 'yearly']).map(r => html`
-            <span key=${r} onClick=${() => onRepeat(r)} style=${{ padding: '6px 12px', borderRadius: '999px',
+            <span key=${r} onClick=${dateStr || r === 'none' ? () => onRepeat(r) : undefined} style=${{ padding: '6px 12px', borderRadius: '999px',
               cursor: dateStr || r === 'none' ? 'pointer' : 'default',
               font: `500 12.5px ${T.mono}`, opacity: dateStr || r === 'none' ? 1 : 0.4,
               border: `1px solid ${rep === r ? T.accent : T.card2}`,
