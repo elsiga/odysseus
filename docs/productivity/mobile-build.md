@@ -168,3 +168,14 @@ Verified this session:
    elsewhere first, then reopen the task — **the edit must have been saved**.
 7. On Home press back once; go to Library and back to Home; press back once more —
    **the app must NOT exit** (the exit arm is reset by navigation).
+
+## Calendar Slice A — dates are real (2026-07-24)
+
+Adds `Note.duration_min` (nullable int; **redeploy the server** — `docker compose up -d --build` — so the startup migration adds the column), fixes Capture to store a real `YYYY-MM-DDTHH:MM`, and adds date/time/duration/recurrence editing to Detail. No calendar views yet (Slice B).
+
+### On-device proof (PENDING)
+1. `adb install -r dist/odysseus.apk`, open a task in Detail.
+2. Capture "call mum 9pm" → open it → the date shows **today** and the time **21:00** (NOT the literal text "9pm"); on `https://chat.elsiga.ch` the note's due date renders as a real today-9:00pm (not garbage).
+3. In Detail set a **date** (native picker), a **time**, a **duration** chip (e.g. 45m), and **repeat = Weekly** → reopen: all persist.
+4. On web, the same note shows the due date + a recurring (↻) marker; the recurrence stored is `weekly:<weekday>` (verify in the live DB or via the web reminder behavior).
+5. Clear the date in Detail → it persists as cleared (task has no due date on reopen and on web).
