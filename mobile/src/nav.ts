@@ -7,6 +7,7 @@ export type Route =
   | { name: 'library' }
   | { name: 'project'; project: string }
   | { name: 'detail'; id: string }
+  | { name: 'day'; date?: string }
 
 /** Stable identity for a route, including its parameters. */
 export function routeKey(r: Route): string {
@@ -14,6 +15,7 @@ export function routeKey(r: Route): string {
     case 'capture': return `capture:${r.project ?? ''}`
     case 'project': return `project:${r.project}`
     case 'detail': return `detail:${r.id}`
+    case 'day': return `day:${r.date ?? ''}`
     default: return r.name
   }
 }

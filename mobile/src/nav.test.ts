@@ -65,3 +65,15 @@ describe('shouldExit', () => {
     expect(shouldExit(now - (EXIT_WINDOW_MS + 1), now)).toBe(false)
   })
 })
+
+describe('day route', () => {
+  it('key is stable and param-aware', () => {
+    expect(routeKey({ name: 'day' })).toBe('day:')
+    expect(routeKey({ name: 'day', date: '2026-07-24' })).toBe('day:2026-07-24')
+    expect(routeKey({ name: 'day', date: '2026-07-24' })).not.toBe(routeKey({ name: 'day' }))
+  })
+  it('pushRoute unwinds to an existing day entry', () => {
+    const day: Route = { name: 'day' }
+    expect(pushRoute([home, day, { name: 'detail', id: '1' }], day)).toEqual([home, day])
+  })
+})
